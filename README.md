@@ -5,7 +5,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.3.3（versionCode 8）
+- 当前版本：0.3.4（versionCode 9）
 
 ---
 
@@ -187,7 +187,24 @@ app/src/main/java/com/localcinema/app/
 
 ---
 
-## 五、播放性能诊断
+## 五、播放性能调优
+
+### 已生效的配置（`PlaybackService`）
+
+| 项 | 值 | 作用 |
+|---|---|---|
+| `SeekParameters` | 前后各 **2 秒**容差 | 精确 seek 要从关键帧解到目标帧（实测 200~700ms），放宽后直接落到附近关键帧，解一帧即出画面 |
+| `maxBufferMs` | 50 秒 | 与默认一致，够覆盖 30 秒快进 |
+| `backBuffer` | **30 秒**（默认 0） | 保住已播数据，快退不必重新读盘 |
+| `targetBufferBytes` | 96MB | 按字节封顶：1080p 可缓冲上百秒，4K 自动压缩，避免后台被杀 |
+
+内存代价约 +20~100MB（随码率），耗电不升反降（seek 时少解 100+ 帧）。
+
+**一个坑**：`SeekParameters` 的容差单位是**微秒**，写 `2000` 只是 2 毫秒，等于没改；要写 `2_000_000`。
+
+### 诊断
+
+## 六、播放性能诊断
 
 排查「快进后要等一下」时，把 `PlaybackService.ENABLE_SEEK_DIAGNOSTICS` 置为 `true`（当前默认开），
 Logcat 过滤 `tag:SeekPerf`，每次 seek 会输出一条拆解：
@@ -201,11 +218,12 @@ Logcat 过滤 `tag:SeekPerf`，每次 seek 会输出一条拆解：
 
 判读：
 - `io` 占比高 → 瓶颈在读文件（SAF provider、SD 卡、随机读慢）
+- `io` 长期显示 0 是**正常的**：本地文件读取只要几毫秒，且多发生在 seek 事件分发之前；此时看 `total` 与跳转距离是否相关即可
 - `decode` 占比高 → 解码器在从关键帧往目标帧解，改用 `SeekParameters.CLOSEST_SYNC`
 - 出现 `命中缓冲区` 但仍慢 → 纯粹是解码，同上
 - `decoder = OMX.google.*` → 走的是软解，先解决解码再谈 seek
 
-## 六、踩过的坑（改代码前先看这里）
+## 七、踩过的坑（改代码前先看这里）
 
 **1. `@Insert(REPLACE)` + 外键 CASCADE = 更新即删除子记录**
 
@@ -269,7 +287,7 @@ Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长�
 
 ---
 
-## 七、已知限制
+## 八、已知限制
 
 - ASS 只渲染文本，字体/位置/动画等特效不支持（自解析的边界）
 - 字幕延迟仅对外挂字幕生效，内嵌轨不支持（面板已注明）

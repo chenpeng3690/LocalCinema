@@ -3,6 +3,8 @@ package com.localcinema.app.playback
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -31,6 +33,20 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
+        val loadControl = DefaultLoadControl.Builder()
+            // 缓冲 50 秒：够快进 30 秒命中，又不至于在 4K 上吃掉太多内存
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 50_000,
+                /* maxBufferMs = */ 50_000,
+                /* bufferForPlaybackMs = */ 2_500,
+                /* bufferForPlaybackAfterRebufferMs = */ 5_000
+            )
+            // 保留已播过的 30 秒：快退不必重新读盘。默认值是 0，也就是播完全丢
+            .setBackBuffer(/* backBufferMs = */ 30_000, /* retainBackBufferFromKeyframe = */ true)
+            // 按字节封顶：1080p 能缓冲上百秒，4K 高码率则自动压缩，避免后台被系统杀掉
+            .setTargetBufferBytes(96 * 1024 * 1024)
+            .build()
+
         val player = ExoPlayer.Builder(this)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -41,7 +57,14 @@ class PlaybackService : MediaSessionService() {
             )
             // 拔耳机 / 蓝牙断开时自动暂停
             .setHandleAudioBecomingNoisy(true)
+            .setLoadControl(loadControl)
             .build()
+
+        // 精确 seek 要从上一个关键帧一路解到目标帧（实测 200~700ms），
+        // 放宽 2 秒容差后可以直接落到附近的关键帧，解一帧即可出画面。
+        // 2 秒误差对「快进 30 秒」「拖进度条」都察觉不到。
+        // 注意单位是「微秒」：2_000_000us = 2 秒。写成 2000 只是 2 毫秒，等于没放宽
+        player.setSeekParameters(SeekParameters(2_000_000L, 2_000_000L))
 
         // 排查「快进后要等一下」用：定位瓶颈在读文件还是解码。
         // 平时关掉，否则每次加载都会刷日志。

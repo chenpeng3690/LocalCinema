@@ -53,6 +53,13 @@ class SeekDiagnostics : AnalyticsListener {
     @Volatile
     private var sawBuffering = false
 
+    /** 缓存的编码信息，每次 seek 结算时一并打印，便于对比改配置前后的落点差异 */
+    @Volatile
+    private var lastFormat: Format? = null
+
+    @Volatile
+    private var lastDecoder: String? = null
+
     /**
      * 兜底结算：seek 后如果数据本来就在缓冲区里，播放器不会进 BUFFERING 也不会重渲首帧，
      * 没有这个定时器就永远看不到"最快情况"的数据 —— 而那恰恰是最有参考价值的一档。
@@ -133,6 +140,7 @@ class SeekDiagnostics : AnalyticsListener {
         initializationTimestampMs: Long,
         initializationDurationMs: Long
     ) {
+        lastDecoder = decoderName
         Log.i(TAG, "decoder = $decoderName  init ${initializationDurationMs}ms")
     }
 
@@ -141,6 +149,7 @@ class SeekDiagnostics : AnalyticsListener {
         format: Format,
         decoderReuseEvaluation: DecoderReuseEvaluation?
     ) {
+        lastFormat = format
         val kbps = if (format.bitrate > 0) "${format.bitrate / 1000}kbps" else "码率未知"
         Log.i(TAG, "video = ${format.codecs ?: "未知编码"}  ${format.width}x${format.height}  $kbps")
     }
@@ -159,7 +168,29 @@ class SeekDiagnostics : AnalyticsListener {
             "  total ${total}ms  |  io ${ioMs}ms / ${ioChunks}块 / ${ioBytes / 1024}KB" +
                 "  |  decode≈${decode}ms  |  $bufferState"
         )
+        lastFormat?.let { f ->
+            val kbps = if (f.bitrate > 0) "${f.bitrate / 1000}kbps" else "码率未知"
+            val soft = isSoftwareDecoder(lastDecoder)
+            val kind = when (soft) {
+                true -> "软解"
+                false -> "硬解"
+                null -> "解码器未记录"
+            }
+            Log.d(TAG, "  cfg  ${f.width}x${f.height}  $kbps  $kind  ${lastDecoder ?: ""}")
+        }
         note?.let { Log.d(TAG, "  note: $it") }
+    }
+
+    /**
+     * 本地文件的读取通常只要几毫秒，而且多发生在 seek 事件分发之前，
+     * 因此 io 累计经常显示 0 —— 那是真实情况，不是漏统计。
+     * 判断瓶颈看 total 即可：距离越远耗时明显更长才是 IO 问题。
+     */
+    private fun isSoftwareDecoder(name: String?): Boolean? {
+        if (name == null) return null
+        return name.contains("google", ignoreCase = true) ||
+            name.contains("c2.android", ignoreCase = true) ||
+            name.contains(".sw.", ignoreCase = true)
     }
 
     private fun fmt(ms: Long): String {
