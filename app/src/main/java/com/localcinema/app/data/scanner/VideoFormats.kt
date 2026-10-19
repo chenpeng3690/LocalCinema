@@ -25,6 +25,19 @@ object VideoFormats {
         return ext in VIDEO_EXTENSIONS
     }
 
+    /** 外挂字幕扩展名 */
+    private val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "sub", "smi", "ttml")
+
+    fun isSubtitle(name: String): Boolean = extensionOf(name) in SUBTITLE_EXTENSIONS
+
+    /** ExoPlayer 需要的字幕 MIME 类型 */
+    fun subtitleMimeType(name: String): String = when (extensionOf(name)) {
+        "vtt" -> "text/vtt"
+        "ass", "ssa" -> "text/x-ssa"
+        "ttml" -> "application/ttml+xml"
+        else -> "application/x-subrip"
+    }
+
     fun extensionOf(name: String): String =
         name.substringAfterLast('.', "").lowercase()
 

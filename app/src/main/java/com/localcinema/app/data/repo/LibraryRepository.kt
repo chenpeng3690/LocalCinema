@@ -133,6 +133,7 @@ class LibraryRepository @Inject constructor(
                     acodec = null,
                     lastModified = v.lastModified,
                     thumbPath = null,
+                    subtitleUri = v.subtitleUri?.toString(),
                     missing = false,
                     addedAt = now
                 )

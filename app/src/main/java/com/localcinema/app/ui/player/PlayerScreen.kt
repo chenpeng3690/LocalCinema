@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -23,7 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.MoreVert
@@ -52,9 +54,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,6 +73,8 @@ import kotlin.math.abs
 
 private enum class GestureMode { None, Undecided, Seek, Brightness, Volume }
 
+private enum class PlayerPanel { None, Subtitle, Audio }
+
 @Composable
 fun PlayerScreen(
     viewModel: PlayerViewModel,
@@ -76,6 +83,13 @@ fun PlayerScreen(
     val current by viewModel.currentVideo.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val resumeHint by viewModel.resumeHint.collectAsStateWithLifecycle()
+    val subtitleText by viewModel.subtitleText.collectAsStateWithLifecycle()
+    val subtitlePrefs by viewModel.subtitlePrefs.collectAsStateWithLifecycle()
+    val textTracks by viewModel.textTracks.collectAsStateWithLifecycle()
+    val selectedTextIndex by viewModel.selectedTextIndex.collectAsStateWithLifecycle()
+    val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
+    val selectedAudioIndex by viewModel.selectedAudioIndex.collectAsStateWithLifecycle()
+
     val context = LocalContext.current
     val activity = context as? Activity
 
@@ -90,15 +104,14 @@ fun PlayerScreen(
     var locked by remember { mutableStateOf(false) }
     var aspectMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var overlay by remember { mutableStateOf<String?>(null) }
+    var panel by remember { mutableStateOf(PlayerPanel.None) }
 
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
 
-    // 进度条拖动
     var sliderDragging by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableFloatStateOf(0f) }
 
-    // 画面手势拖动（亮度/音量/进度）
     var gestureMode by remember { mutableStateOf(GestureMode.None) }
     var gestureStartX by remember { mutableFloatStateOf(0f) }
     var gestureStartY by remember { mutableFloatStateOf(0f) }
@@ -106,6 +119,15 @@ fun PlayerScreen(
     var baseVolume by remember { mutableIntStateOf(0) }
     var baseBrightness by remember { mutableFloatStateOf(0.5f) }
     var seekPreview by remember { mutableStateOf<Long?>(null) }
+
+    val subtitlePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.loadExternalSubtitle(uri, uri.lastPathSegment ?: "subtitle.srt")
+            Toast.makeText(context, "已挂载字幕", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -117,8 +139,8 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(controlsVisible, isPlaying, locked) {
-        if (controlsVisible && isPlaying && !locked) {
+    LaunchedEffect(controlsVisible, isPlaying, locked, panel) {
+        if (controlsVisible && isPlaying && !locked && panel == PlayerPanel.None) {
             delay(3_000)
             controlsVisible = false
         }
@@ -146,7 +168,6 @@ fun PlayerScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                // 单击 / 双击
                 .pointerInput(locked) {
                     if (locked) return@pointerInput
                     detectTapGestures(
@@ -162,7 +183,6 @@ fun PlayerScreen(
                         }
                     )
                 }
-                // 拖动：左右滑 = 进度，左半屏上下 = 亮度，右半屏上下 = 音量
                 .pointerInput(locked) {
                     if (locked) return@pointerInput
                     detectDragGestures(
@@ -264,6 +284,8 @@ fun PlayerScreen(
                     locked = true
                     controlsVisible = false
                 },
+                onOpenSubtitle = { panel = PlayerPanel.Subtitle },
+                onOpenAudio = { panel = PlayerPanel.Audio },
                 onCycleAspect = {
                     aspectMode = when (aspectMode) {
                         AspectRatioFrameLayout.RESIZE_MODE_FIT ->
@@ -284,7 +306,32 @@ fun PlayerScreen(
             )
         }
 
-        // 锁定态：只留一个解锁按钮
+        // ---------- 字幕 ----------
+        if (subtitlePrefs.enabled && subtitleText.isNotBlank()) {
+            Text(
+                text = subtitleText,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(
+                        start = 24.dp,
+                        end = 24.dp,
+                        bottom = subtitlePrefs.bottomPaddingDp.dp
+                    ),
+                color = Color(subtitlePrefs.colorArgb),
+                textAlign = TextAlign.Center,
+                style = TextStyle(
+                    fontSize = subtitlePrefs.fontSizeSp.sp,
+                    lineHeight = (subtitlePrefs.fontSizeSp * 1.35f).sp,
+                    shadow = Shadow(
+                        color = Color(0xE6000000),
+                        offset = Offset(0f, 2f),
+                        blurRadius = 8f
+                    )
+                )
+            )
+        }
+
+        // ---------- 锁定态 ----------
         if (locked) {
             Box(
                 modifier = Modifier
@@ -333,6 +380,34 @@ fun PlayerScreen(
             }
         }
     }
+
+    // ---------- 面板 ----------
+    when (panel) {
+        PlayerPanel.Subtitle -> SubtitleSheet(
+            prefs = subtitlePrefs,
+            tracks = textTracks,
+            selectedIndex = selectedTextIndex,
+            onDismiss = { panel = PlayerPanel.None },
+            onToggleEnabled = viewModel::setSubtitleEnabled,
+            onSelectTrack = viewModel::selectTextTrack,
+            onPickExternal = {
+                panel = PlayerPanel.None
+                subtitlePicker.launch(arrayOf("*/*"))
+            },
+            onFontSize = viewModel::setSubtitleFontSize,
+            onColor = viewModel::setSubtitleColor,
+            onDelay = viewModel::adjustSubtitleDelay
+        )
+
+        PlayerPanel.Audio -> AudioTrackSheet(
+            tracks = audioTracks,
+            selectedIndex = selectedAudioIndex,
+            onDismiss = { panel = PlayerPanel.None },
+            onSelect = viewModel::selectAudioTrack
+        )
+
+        PlayerPanel.None -> Unit
+    }
 }
 
 @Composable
@@ -351,6 +426,8 @@ private fun PlayerControls(
     onSliderChange: (Float) -> Unit,
     onSliderFinish: () -> Unit,
     onLock: () -> Unit,
+    onOpenSubtitle: () -> Unit,
+    onOpenAudio: () -> Unit,
     onCycleAspect: () -> Unit,
     onUnavailable: (String) -> Unit
 ) {
@@ -402,10 +479,10 @@ private fun PlayerControls(
                 Text(text = "1.0x", color = PlayerColors.RateBadgeInk, fontSize = 10.sp)
             }
             Spacer(Modifier.width(8.dp))
-            IconButtonFlat(onClick = { onUnavailable("更多菜单") }) {
+            IconButtonFlat(onClick = onCycleAspect) {
                 Icon(
                     imageVector = Icons.Rounded.MoreVert,
-                    contentDescription = "更多",
+                    contentDescription = "画面比例",
                     tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )
@@ -483,16 +560,8 @@ private fun PlayerControls(
                 ToolItem(icon = Icons.Rounded.SkipPrevious, label = "上一集", onClick = onPrev)
                 ToolItem(icon = Icons.Rounded.SkipNext, label = "下一集", onClick = onNext)
                 ToolItem(icon = Icons.Rounded.Speed, label = "倍速", onClick = { onUnavailable("倍速") })
-                ToolItem(icon = Icons.Rounded.Subtitles, label = "字幕", onClick = { onUnavailable("字幕") })
-                ToolItem(
-                    icon = Icons.Rounded.AspectRatio,
-                    label = when (aspectMode) {
-                        AspectRatioFrameLayout.RESIZE_MODE_FILL -> "铺满"
-                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "裁剪"
-                        else -> "适应"
-                    },
-                    onClick = onCycleAspect
-                )
+                ToolItem(icon = Icons.Rounded.Subtitles, label = "字幕", onClick = onOpenSubtitle)
+                ToolItem(icon = Icons.Rounded.Audiotrack, label = "音轨", onClick = onOpenAudio)
                 ToolItem(icon = Icons.Rounded.Lock, label = "锁定", onClick = onLock)
             }
         }

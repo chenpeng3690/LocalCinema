@@ -18,7 +18,10 @@ data class ScannedVideo(
     val lastModified: Long,
     val durationMs: Long,
     val width: Int,
-    val height: Int
+    val height: Int,
+    /** 同目录下同名的外挂字幕，扫描时自动配对 */
+    val subtitleUri: Uri? = null,
+    internal val parentDocId: String = ""
 )
 
 /**
@@ -47,12 +50,14 @@ class SafScanner @Inject constructor(
         isCancelled: () -> Boolean
     ): List<ScannedVideo> = withContext(Dispatchers.IO) {
         val result = ArrayList<ScannedVideo>()
+        /** key = "父目录docId|去扩展名的文件名"，用于视频与字幕配对 */
+        val subtitleMap = HashMap<String, Uri>()
         var scanned = 0
 
         val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
             ?: return@withContext emptyList()
 
-        // 用队列做迭代遍历，禁用递归函数，避免深层目录栈溢出
+        // 迭代遍历，禁用递归函数，避免深层目录栈溢出
         val queue = ArrayDeque<String>()
         queue.add(rootDocId)
 
@@ -72,12 +77,19 @@ class SafScanner @Inject constructor(
                     continue
                 }
 
-                if (!VideoFormats.isVideo(child.name)) continue
-                if (VideoFormats.shouldIgnoreFile(child.name, child.size)) continue
-
                 val childUri = runCatching {
                     DocumentsContract.buildDocumentUriUsingTree(treeUri, child.docId)
                 }.getOrNull() ?: continue
+
+                // 字幕先登记，稍后和视频配对
+                if (VideoFormats.isSubtitle(child.name)) {
+                    val key = "$currentDirId|${VideoFormats.displayNameOf(child.name)}"
+                    subtitleMap.putIfAbsent(key, childUri)
+                    continue
+                }
+
+                if (!VideoFormats.isVideo(child.name)) continue
+                if (VideoFormats.shouldIgnoreFile(child.name, child.size)) continue
 
                 val (duration, width, height) = readMetadata(childUri)
 
@@ -89,7 +101,8 @@ class SafScanner @Inject constructor(
                     lastModified = child.lastModified,
                     durationMs = duration,
                     width = width,
-                    height = height
+                    height = height,
+                    parentDocId = currentDirId
                 )
 
                 if (result.size % 5 == 0) onProgress(scanned, result.size)
@@ -98,7 +111,12 @@ class SafScanner @Inject constructor(
             onProgress(scanned, result.size)
         }
 
-        result
+        // 回填字幕
+        result.map { video ->
+            video.copy(
+                subtitleUri = subtitleMap["${video.parentDocId}|${video.displayName}"]
+            )
+        }
     }
 
     private fun listChildren(treeUri: Uri, parentDocId: String): List<DocEntry> {
