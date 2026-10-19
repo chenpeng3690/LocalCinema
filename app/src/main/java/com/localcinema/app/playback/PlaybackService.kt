@@ -34,10 +34,18 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
 
         val loadControl = DefaultLoadControl.Builder()
-            // 缓冲 50 秒：够快进 30 秒命中，又不至于在 4K 上吃掉太多内存
+            /**
+             * 前向缓冲压到 20 秒（默认 50 秒）。
+             *
+             * 目的：让「快进 30 秒」的目标点落在缓冲之外，从而触发重新加载。
+             * 缓冲内跳转不走 SeekParameters，只能从最近的关键帧一路解码过来（实测 350~660ms）；
+             * 超出缓冲则按 2 秒容差直接请求关键帧（实测 80~150ms）。
+             *
+             * 代价：缓冲更薄，慢盘或高码率下更容易卡。若出现卡顿请改回 50_000。
+             */
             .setBufferDurationsMs(
-                /* minBufferMs = */ 50_000,
-                /* maxBufferMs = */ 50_000,
+                /* minBufferMs = */ 20_000,
+                /* maxBufferMs = */ 20_000,
                 /* bufferForPlaybackMs = */ 2_500,
                 /* bufferForPlaybackAfterRebufferMs = */ 5_000
             )
