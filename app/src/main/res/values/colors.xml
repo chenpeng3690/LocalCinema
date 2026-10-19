@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 Compose 中 PlayerColors 保持一致，供系统窗口使用 -->
+    <color name="bg">#FF08080A</color>
+    <color name="accent">#FFFF6B45</color>
+</resources>

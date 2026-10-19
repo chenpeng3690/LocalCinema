@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">本地影院</string>
+
+    <string name="tab_library">影音库</string>
+    <string name="tab_folder">文件夹</string>
+    <string name="tab_recent">最近</string>
+    <string name="tab_settings">设置</string>
+
+    <string name="empty_album_title">还没有专辑</string>
+    <string name="empty_album_desc">把一个存放视频的文件夹添加为专辑，之后在这里就能直接续播上次看到的位置。</string>
+    <string name="empty_album_action">添加专辑</string>
+</resources>
