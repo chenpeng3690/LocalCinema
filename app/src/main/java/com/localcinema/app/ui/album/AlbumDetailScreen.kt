@@ -37,7 +37,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Sort
+import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -484,7 +484,7 @@ fun AlbumDetailScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Sort,
+                            imageVector = Icons.AutoMirrored.Rounded.Sort,
                             contentDescription = null,
                             tint = PlayerColors.TextSecondary,
                             modifier = Modifier.size(12.dp)
@@ -568,7 +568,7 @@ fun AlbumDetailScreen(
                 )
                 SORT_OPTIONS.forEach { (mode, label) ->
                     SheetAction(
-                        icon = Icons.Rounded.Sort,
+                        icon = Icons.AutoMirrored.Rounded.Sort,
                         label = label,
                         highlight = mode == sortMode,
                         onClick = {
