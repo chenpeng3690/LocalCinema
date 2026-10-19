@@ -69,6 +69,11 @@ data class VideoEntity(
     val thumbPath: String?,
     /** 同目录下同名外挂字幕的 uri（扫描时自动匹配） */
     val subtitleUri: String? = null,
+    /**
+     * 用户手动挂载的字幕 uri。
+     * 优先级高于自动匹配的 subtitleUri，重扫不会覆盖，下次进来自动加载。
+     */
+    val manualSubtitleUri: String? = null,
     /** 扫描时文件已不存在，灰显而非物理删除 */
     val missing: Boolean = false,
     val addedAt: Long

@@ -14,6 +14,7 @@ import androidx.media3.common.text.CueGroup
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
 import com.localcinema.app.data.prefs.JumpButtonConfig
+import com.localcinema.app.data.prefs.PlaylistMode
 import com.localcinema.app.data.prefs.SettingsStore
 import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.scanner.NaturalOrder
@@ -21,6 +22,7 @@ import com.localcinema.app.data.subtitle.SubtitleRepository
 import com.localcinema.app.data.subtitle.TimedCue
 import com.localcinema.app.playback.PlayerConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -37,7 +39,7 @@ import javax.inject.Inject
 /** 可切换的轨道。index = -1 代表外挂字幕 */
 data class TrackOption(val index: Int, val label: String)
 
-/** 字幕显示参数 */
+/** 字幕显示参数，跨视频保留 */
 data class SubtitlePrefs(
     val enabled: Boolean = true,
     val fontSizeSp: Float = 14f,
@@ -46,9 +48,15 @@ data class SubtitlePrefs(
     val bottomPaddingDp: Int = 48
 )
 
+/** 播完一集后的「下一集」倒计时状态 */
+data class NextUpState(
+    val title: String,
+    val secondsLeft: Int
+)
+
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
-    videoDao: VideoDao,
+    private val videoDao: VideoDao,
     private val playbackRepository: PlaybackRepository,
     private val subtitleRepository: SubtitleRepository,
     private val settingsStore: SettingsStore,
@@ -81,11 +89,37 @@ class PlayerViewModel @Inject constructor(
     val resumeHint: StateFlow<String?> = _resumeHint.asStateFlow()
 
     private val _backgroundPlay = MutableStateFlow(false)
-    val backgroundPlay: StateFlow<Boolean> = _backgroundPlay.asStateFlow()
 
     // ---------- 倍速 ----------
     private val _speedPercent = MutableStateFlow(100)
     val speedPercent: StateFlow<Int> = _speedPercent.asStateFlow()
+
+    /** 长按画面加速中；此时界面角标显示临时倍速 */
+    private val _boosting = MutableStateFlow(false)
+    val boosting: StateFlow<Boolean> = _boosting.asStateFlow()
+
+    /** 长按画面临时加速的目标倍速 */
+    private val _boostSpeedPercent = MutableStateFlow(200)
+    val boostSpeedPercent: StateFlow<Int> = _boostSpeedPercent.asStateFlow()
+
+    private var speedBeforeBoost: Int? = null
+
+    // ---------- 播放列表 ----------
+    private val _playlistMode = MutableStateFlow(PlaylistMode.SEQUENCE)
+    val playlistMode: StateFlow<String> = _playlistMode.asStateFlow()
+
+    private var nextCountdownEnabled = true
+
+    private val _nextUp = MutableStateFlow<NextUpState?>(null)
+    val nextUp: StateFlow<NextUpState?> = _nextUp.asStateFlow()
+
+    private var countdownJob: Job? = null
+
+    // ---------- 睡眠定时 ----------
+    private val _sleepRemainingSec = MutableStateFlow<Int?>(null)
+    val sleepRemainingSec: StateFlow<Int?> = _sleepRemainingSec.asStateFlow()
+
+    private var sleepJob: Job? = null
 
     // ---------- 悬浮按钮 ----------
     private val _jumpLeft = MutableStateFlow(JumpButtonConfig.DEFAULT_LEFT)
@@ -105,6 +139,9 @@ class PlayerViewModel @Inject constructor(
     private var externalActive: Boolean = false
 
     private val _externalSubtitleName = MutableStateFlow<String?>(null)
+    private val _externalIsManual = MutableStateFlow(false)
+
+    val externalSubtitleManual: StateFlow<Boolean> = _externalIsManual.asStateFlow()
 
     private val _textTracks = MutableStateFlow<List<TrackOption>>(emptyList())
 
@@ -130,10 +167,7 @@ class PlayerViewModel @Inject constructor(
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            if (playbackState == Player.STATE_ENDED) {
-                saveNow()
-                playNext(auto = true)
-            }
+            if (playbackState == Player.STATE_ENDED) onEnded()
         }
 
         /** 内嵌字幕走这里；外挂字幕自己渲染 */
@@ -170,6 +204,21 @@ class PlayerViewModel @Inject constructor(
     }
 
     init {
+        // 先把持久化的设置灌进来，避免首帧用默认值闪一下
+        viewModelScope.launch {
+            val s = settingsStore.settings.first()
+            _subtitlePrefs.value = SubtitlePrefs(
+                enabled = s.subtitleEnabled,
+                fontSizeSp = s.subtitleFontSize,
+                colorArgb = s.subtitleColorArgb,
+                delayMs = s.subtitleDelayMs,
+                bottomPaddingDp = s.subtitleBottomPadding
+            )
+            _playlistMode.value = s.playlistMode
+            nextCountdownEnabled = s.nextCountdown
+            _boostSpeedPercent.value = s.longPressSpeedPercent
+        }
+
         connection.connect()
 
         // 连接完成后绑定监听并开始播放
@@ -184,12 +233,23 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        // 设置变化时实时同步（用户可能在播放页改了按钮配置）
         viewModelScope.launch {
             settingsStore.settings.collect { settings ->
                 applySpeed(settings.speedPercent.coerceIn(50, 500), persist = false)
                 _jumpLeft.value = settings.jumpLeft
                 _jumpRight.value = settings.jumpRight
                 _backgroundPlay.value = settings.backgroundPlay
+                _playlistMode.value = settings.playlistMode
+                nextCountdownEnabled = settings.nextCountdown
+                _boostSpeedPercent.value = settings.longPressSpeedPercent
+                // 字幕样式可能在另一个入口被改过，同步但不覆盖当前开关以外的状态
+                val prefs = _subtitlePrefs.value
+                _subtitlePrefs.value = prefs.copy(
+                    fontSizeSp = settings.subtitleFontSize,
+                    colorArgb = settings.subtitleColorArgb,
+                    bottomPaddingDp = settings.subtitleBottomPadding
+                )
             }
         }
 
@@ -244,6 +304,7 @@ class PlayerViewModel @Inject constructor(
     fun playVideo(video: VideoEntity) {
         val p = attachedPlayer ?: return
         viewModelScope.launch {
+            cancelCountdown()
             saveNow()
             val startMs = playbackRepository.resumePosition(video)
             playbackRepository.markStarted(video)
@@ -253,6 +314,7 @@ class PlayerViewModel @Inject constructor(
             externalCues = emptyList()
             externalActive = false
             _externalSubtitleName.value = null
+            _externalIsManual.value = false
             _selectedTextIndex.value = null
             _subtitleText.value = ""
 
@@ -268,7 +330,11 @@ class PlayerViewModel @Inject constructor(
             }
             p.playWhenReady = true
 
-            video.subtitleUri?.let { loadSubtitleFile(Uri.parse(it)) }
+            // 手动挂载过就以手动为准，否则用扫描时自动匹配的
+            val subtitle = video.manualSubtitleUri ?: video.subtitleUri
+            subtitle?.let {
+                loadSubtitleFile(Uri.parse(it), manual = video.manualSubtitleUri != null)
+            }
         }
     }
 
@@ -283,7 +349,7 @@ class PlayerViewModel @Inject constructor(
             )
             .build()
 
-    private suspend fun loadSubtitleFile(uri: Uri) {
+    private suspend fun loadSubtitleFile(uri: Uri, manual: Boolean = false) {
         val name = uri.lastPathSegment ?: "subtitle"
         val cues = subtitleRepository.load(uri, name)
         if (cues.isEmpty()) {
@@ -293,18 +359,54 @@ class PlayerViewModel @Inject constructor(
         externalCues = cues
         externalActive = true
         _externalSubtitleName.value = name
+        _externalIsManual.value = manual
         _selectedTextIndex.value = EXTERNAL_INDEX
         _subtitlePrefs.value = _subtitlePrefs.value.copy(enabled = true)
 
-        attachedPlayer?.trackSelectionParameters = attachedPlayer?.trackSelectionParameters
-            ?.buildUpon()
-            ?.clearOverridesOfType(C.TRACK_TYPE_TEXT)
-            ?.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            ?.build()
+        attachedPlayer?.let { p ->
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+        }
     }
 
     fun loadExternalSubtitle(uri: Uri) {
-        viewModelScope.launch { loadSubtitleFile(uri) }
+        viewModelScope.launch {
+            loadSubtitleFile(uri, manual = true)
+            // 记住这次选择，下次进来自动加载同一份字幕
+            _currentVideo.value?.let { video ->
+                videoDao.setManualSubtitle(video.id, uri.toString())
+                _currentVideo.value = video.copy(manualSubtitleUri = uri.toString())
+            }
+        }
+    }
+
+    /** 取消手动绑定，回到扫描时的自动匹配结果 */
+    fun clearManualSubtitle() {
+        val video = _currentVideo.value ?: return
+        viewModelScope.launch {
+            videoDao.setManualSubtitle(video.id, null)
+            _currentVideo.value = video.copy(manualSubtitleUri = null)
+            externalCues = emptyList()
+            externalActive = false
+            _externalSubtitleName.value = null
+            _externalIsManual.value = false
+            _selectedTextIndex.value = null
+            _subtitleText.value = ""
+
+            val auto = video.subtitleUri
+            if (auto != null) {
+                loadSubtitleFile(Uri.parse(auto), manual = false)
+            } else {
+                attachedPlayer?.let { p ->
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                        .build()
+                }
+            }
+        }
     }
 
     /** 界面退到后台：落进度；未开启后台播放则暂停 */
@@ -317,8 +419,16 @@ class PlayerViewModel @Inject constructor(
 
     fun togglePlay() {
         val p = attachedPlayer ?: return
-        if (p.isPlaying) p.pause() else p.play()
+        if (p.isPlaying) {
+            p.pause()
+        } else {
+            // ENDED 状态下 play() 不会自动从头开始
+            if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
+            p.play()
+        }
     }
+
+    // ---------- 倍速 ----------
 
     fun stepSpeed(delta: Int) = applySpeed(_speedPercent.value + delta)
 
@@ -327,10 +437,28 @@ class PlayerViewModel @Inject constructor(
     private fun applySpeed(percent: Int, persist: Boolean = true) {
         val clamped = percent.coerceIn(50, 500)
         _speedPercent.value = clamped
-        attachedPlayer?.setPlaybackSpeed(clamped / 100f)
+        if (speedBeforeBoost == null) {
+            attachedPlayer?.setPlaybackSpeed(clamped / 100f)
+        }
         if (persist) {
             viewModelScope.launch { settingsStore.setSpeedPercent(clamped) }
         }
+    }
+
+    /** 长按画面：临时拉高倍速，松开还原，不改用户设置 */
+    fun beginTemporarySpeedUp() {
+        val target = _boostSpeedPercent.value
+        if (target <= 0 || speedBeforeBoost != null) return
+        speedBeforeBoost = _speedPercent.value
+        attachedPlayer?.setPlaybackSpeed(target / 100f)
+        _boosting.value = true
+    }
+
+    fun endTemporarySpeedUp() {
+        val back = speedBeforeBoost ?: return
+        speedBeforeBoost = null
+        attachedPlayer?.setPlaybackSpeed(back / 100f)
+        _boosting.value = false
     }
 
     fun seekTo(positionMs: Long) {
@@ -344,15 +472,19 @@ class PlayerViewModel @Inject constructor(
         seekTo(p.currentPosition + deltaMs)
     }
 
+    // ---------- 播放列表 ----------
+
+    /** 手动点「下一集」：忽略「播完停止」，但遵守随机 */
     fun playNext(auto: Boolean = false) {
-        val list = videos.value
-        val current = _currentVideo.value ?: return
-        val index = list.indexOfFirst { it.id == current.id }
-        if (index >= 0 && index + 1 < list.size) {
-            playVideo(list[index + 1])
-        } else if (!auto) {
-            attachedPlayer?.pause()
+        if (!auto) cancelCountdown()
+        val next = pickNext(auto) ?: run {
+            if (!auto) {
+                attachedPlayer?.pause()
+                _resumeHint.value = "已经是最后一集"
+            }
+            return
         }
+        playVideo(next)
     }
 
     fun playPrevious() {
@@ -361,6 +493,107 @@ class PlayerViewModel @Inject constructor(
         val index = list.indexOfFirst { it.id == current.id }
         if (index > 0) playVideo(list[index - 1])
     }
+
+    private fun pickNext(auto: Boolean): VideoEntity? {
+        val list = videos.value.filter { !it.missing }
+        if (list.isEmpty()) return null
+        val current = _currentVideo.value
+
+        if (_playlistMode.value == PlaylistMode.SHUFFLE) {
+            val pool = list.filter { it.id != current?.id }
+            return if (pool.isEmpty()) list.first() else pool.random()
+        }
+
+        val index = list.indexOfFirst { it.id == current?.id }
+        val nextIndex = index + 1
+        return if (nextIndex in list.indices) list[nextIndex] else null
+    }
+
+    fun cyclePlaylistMode() {
+        val next = PlaylistMode.next(_playlistMode.value)
+        _playlistMode.value = next
+        viewModelScope.launch { settingsStore.setPlaylistMode(next) }
+    }
+
+    fun setPlaylistMode(mode: String) {
+        _playlistMode.value = mode
+        viewModelScope.launch { settingsStore.setPlaylistMode(mode) }
+    }
+
+    private fun onEnded() {
+        cancelCountdown()
+        saveNow()
+
+        when (_playlistMode.value) {
+            PlaylistMode.LOOP_ONE -> {
+                attachedPlayer?.seekTo(0)
+                attachedPlayer?.play()
+            }
+
+            PlaylistMode.STOP_AFTER_ONE -> attachedPlayer?.pause()
+
+            else -> {
+                val next = pickNext(auto = true)
+                if (next == null) {
+                    _resumeHint.value = "已播完最后一集"
+                    return
+                }
+                if (nextCountdownEnabled) startCountdown(next) else playVideo(next)
+            }
+        }
+    }
+
+    private fun startCountdown(next: VideoEntity) {
+        countdownJob = viewModelScope.launch {
+            for (left in COUNTDOWN_SECONDS downTo 1) {
+                _nextUp.value = NextUpState(next.displayName, left)
+                delay(1_000)
+            }
+            _nextUp.value = null
+            playVideo(next)
+        }
+    }
+
+    fun playNextNow() {
+        val next = pickNext(auto = true) ?: return
+        cancelCountdown()
+        playVideo(next)
+    }
+
+    fun cancelCountdown() {
+        countdownJob?.cancel()
+        countdownJob = null
+        if (_nextUp.value != null) _nextUp.value = null
+    }
+
+    // ---------- 睡眠定时 ----------
+
+    fun setSleepTimer(minutes: Int) {
+        sleepJob?.cancel()
+        sleepJob = null
+        if (minutes <= 0) {
+            _sleepRemainingSec.value = null
+            return
+        }
+        val endAt = System.currentTimeMillis() + minutes * 60_000L
+        sleepJob = viewModelScope.launch {
+            while (true) {
+                val left = endAt - System.currentTimeMillis()
+                if (left <= 0L) break
+                _sleepRemainingSec.value = ((left + 999) / 1000).toInt()
+                delay(1_000)
+            }
+            _sleepRemainingSec.value = null
+            attachedPlayer?.pause()
+            _resumeHint.value = "定时关闭：已暂停播放"
+            viewModelScope.launch {
+                delay(3_000)
+                _resumeHint.value = null
+            }
+        }
+    }
+
+    // ---------- 进度 ----------
 
     fun durationMs(): Long {
         val d = attachedPlayer?.duration ?: C.TIME_UNSET
@@ -378,28 +611,35 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    // ---------- 字幕设置 ----------
+    // ---------- 字幕设置（写库，跨启动保留） ----------
 
     fun setSubtitleEnabled(enabled: Boolean) {
         _subtitlePrefs.value = _subtitlePrefs.value.copy(enabled = enabled)
         if (!enabled) _subtitleText.value = ""
+        viewModelScope.launch { settingsStore.setSubtitleEnabled(enabled) }
     }
 
     fun setSubtitleFontSize(sp: Float) {
-        _subtitlePrefs.value = _subtitlePrefs.value.copy(fontSizeSp = sp.coerceIn(10f, 30f))
+        val v = sp.coerceIn(10f, 30f)
+        _subtitlePrefs.value = _subtitlePrefs.value.copy(fontSizeSp = v)
+        viewModelScope.launch { settingsStore.setSubtitleFontSize(v) }
     }
 
     fun setSubtitleColor(argb: Long) {
         _subtitlePrefs.value = _subtitlePrefs.value.copy(colorArgb = argb)
+        viewModelScope.launch { settingsStore.setSubtitleColor(argb) }
     }
 
     fun adjustSubtitleDelay(deltaMs: Long) {
         val next = (_subtitlePrefs.value.delayMs + deltaMs).coerceIn(-60_000L, 60_000L)
         _subtitlePrefs.value = _subtitlePrefs.value.copy(delayMs = next)
+        viewModelScope.launch { settingsStore.setSubtitleDelay(next) }
     }
 
     fun setSubtitleBottomPadding(dp: Int) {
-        _subtitlePrefs.value = _subtitlePrefs.value.copy(bottomPaddingDp = dp.coerceIn(8, 160))
+        val v = dp.coerceIn(8, 160)
+        _subtitlePrefs.value = _subtitlePrefs.value.copy(bottomPaddingDp = v)
+        viewModelScope.launch { settingsStore.setSubtitleBottomPadding(v) }
     }
 
     fun selectTextTrack(index: Int?) {
@@ -450,6 +690,8 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         saveNow()
+        cancelCountdown()
+        sleepJob?.cancel()
         attachedPlayer?.removeListener(listener)
         attachedPlayer = null
         // 只释放控制器，播放器归 Service 所有，退出界面不应停止播放
@@ -461,6 +703,7 @@ class PlayerViewModel @Inject constructor(
         const val KEY_ALBUM_ID = "albumId"
         const val KEY_VIDEO_ID = "videoId"
         const val EXTERNAL_INDEX = -1
+        private const val COUNTDOWN_SECONDS = 5
     }
 }
 

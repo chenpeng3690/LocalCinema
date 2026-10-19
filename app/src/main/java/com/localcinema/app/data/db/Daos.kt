@@ -14,6 +14,9 @@ interface AlbumDao {
     @Query("SELECT * FROM albums ORDER BY lastAccessedAt DESC")
     fun observeAll(): Flow<List<AlbumEntity>>
 
+    @Query("SELECT * FROM albums WHERE name LIKE '%' || :keyword || '%' ORDER BY lastAccessedAt DESC")
+    fun search(keyword: String): Flow<List<AlbumEntity>>
+
     @Query("SELECT * FROM albums WHERE id = :id LIMIT 1")
     fun observeById(id: String): Flow<AlbumEntity?>
 
@@ -40,6 +43,20 @@ interface VideoDao {
     @Query("SELECT * FROM videos WHERE albumId = :albumId AND missing = 0 ORDER BY displayName COLLATE NOCASE ASC")
     fun observeByAlbum(albumId: String): Flow<List<VideoEntity>>
 
+    /** 失效文件（目录里已经找不到的文件），用于提示与清理 */
+    @Query("SELECT * FROM videos WHERE albumId = :albumId AND missing = 1 ORDER BY displayName COLLATE NOCASE ASC")
+    fun observeMissing(albumId: String): Flow<List<VideoEntity>>
+
+    /** 跨专辑搜索，按名称模糊匹配 */
+    @Query(
+        "SELECT * FROM videos WHERE missing = 0 AND displayName LIKE '%' || :keyword || '%' " +
+            "ORDER BY displayName COLLATE NOCASE ASC LIMIT 300"
+    )
+    fun search(keyword: String): Flow<List<VideoEntity>>
+
+    @Query("UPDATE videos SET manualSubtitleUri = :uri WHERE id = :id")
+    suspend fun setManualSubtitle(id: String, uri: String?)
+
     @Query("SELECT * FROM videos WHERE albumId = :albumId ORDER BY displayName COLLATE NOCASE ASC")
     suspend fun listByAlbum(albumId: String): List<VideoEntity>
 
@@ -55,6 +72,9 @@ interface VideoDao {
 
     @Upsert
     suspend fun upsert(video: VideoEntity)
+
+    @Query("DELETE FROM videos WHERE id = :id")
+    suspend fun deleteById(id: String)
 
     @Query("UPDATE videos SET missing = 1 WHERE id = :id")
     suspend fun markMissing(id: String)

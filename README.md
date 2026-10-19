@@ -5,6 +5,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
+- 当前版本：0.2.0（versionCode 2）
 
 ---
 
@@ -21,7 +22,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 app/build.gradle.kts
 app/src/main/AndroidManifest.xml
 app/src/main/java/...        （整个 java 目录）
-app/src/main/res/values/     （strings / themes / colors）
+app/src/main/res/            （values / drawable / mipmap）
 build.gradle.kts
 settings.gradle.kts
 gradle.properties
@@ -37,7 +38,7 @@ app/proguard-rules.pro
 仓库不含 `gradle-wrapper.jar`（二进制文件未提交）。若报 `Could not find or load main class org.gradle.wrapper.GradleWrapperMain`，在本机执行一次：
 
 ```powershell
-gradle wrapper --gradle-version 8.7
+gradle wrapper --gradle-version 8.9
 ```
 
 ### 环境要求
@@ -45,8 +46,8 @@ gradle wrapper --gradle-version 8.7
 | 项 | 版本 |
 |---|---|
 | Android Studio | Ladybug (2024.2)+ |
-| JDK | 17（用 AS 自带 JBR，不要 JDK 21+） |
-| Gradle | 8.7 |
+| JDK | 17（用 AS 自带 JBR） |
+| Gradle | 8.9 |
 | AGP / Kotlin | 8.5.2 / 2.0.20 |
 
 ---
@@ -54,31 +55,41 @@ gradle wrapper --gradle-version 8.7
 ## 二、已完成的功能
 
 ### 媒体库
-- **目录建专辑**：SAF 选文件夹 → 递归扫描 → 自动建专辑；也支持一次把子目录各建一个
+- **目录建专辑**：SAF 选文件夹 → 递归扫描 → 自动建专辑
 - **扫描性能**：`DocumentsContract` 批量查询（一次拿整个目录），不是逐文件查
 - **增量同步**：以 `(uri, size, mtime)` 判断增删改；未扫到的旧记录标 `missing` 而非删除
 - **自然排序**：`第2集` 排在 `第10集` 前，不是字典序
+- **排序切换**：名称 / 最近加入 / 修改时间 / 时长，按专辑独立记忆
 - **缩略图**：取第 120 秒的帧（跳过片头黑屏），失败回退 1/3 处、再回退首帧，落盘缓存
+- **专辑封面**：默认自动抽帧；Hero 卡右上角可自选图片（复制进私有目录，不受 SAF 授权失效影响）
 - **专辑管理**：长按卡片 → 重新扫描 / 重命名 / 删除（只删记录，不动视频文件）
+- **失效文件**：扫描发现文件已不在时标 `missing`，专辑页顶部提示，可一键清理记录
+- **单集操作**：长按列表项 → 播放 / 标记已看完 / 清除观看进度 / 从专辑移除
+
+### 搜索
+- **全局搜索**：首页搜索框实时匹配专辑名与视频名，结果分组，点视频直接起播
+- **专辑内搜索**：详情页顶栏搜索图标，只过滤当前专辑
 
 ### 播放
 - **内核**：ExoPlayer（Media3），运行在 `PlaybackService` 里，与界面解耦
 - **进度记忆**：每视频独立记录，5 秒心跳 + 暂停 + 退后台 + 播完四个时机落库
 - **续播规则**：从上次位置 **-5 秒** 开始；距结尾不足 10 秒视为看完，从头播
+- **播放模式**：顺序 / 单集循环 / 随机 / 播完停止，四态在「更多」面板切换
+- **下一集倒计时**：播完弹「N 秒后播放下一集」，可取消或立即播放；可在设置里关掉改成直接跳
 - **手势**：左半屏上下滑调亮度、右半屏上下滑调音量、水平滑拖进度、双击快退/快进
+- **长按加速**：按住画面临时切到 1.5x / 2.0x / 3.0x（可关），松开还原，不改用户设置的倍速
+- **睡眠定时**：15 / 30 / 60 / 90 分钟，到点暂停播放，顶栏显示剩余时间
 - **锁屏**：一键锁定，控件全隐、手势失效，只留解锁按钮
-- **画面比例**：适应 / 铺满 / 裁剪 三态循环
+- **画面比例**：适应 / 铺满 / 裁剪
+- **倍速 0.5x–5.0x**：内部用百分数整数存储，`±` 每次 0.1x，长按连续步进，9 档快捷位，变速不变调，速度持久化
 
 ### 字幕
 - **外挂自动配对**：扫描时把同目录同名 `srt / ass / ssa / vtt / sub / smi` 与视频绑定
+- **手动挂载 + 记忆**：手动选的字幕会被记住，下次进来自动加载，可一键恢复自动匹配
 - **自解析渲染**：自己解析字幕文件后按播放位置筛选，因此支持 **±60 秒延迟微调**
-- **样式**：字号 10–30、四色、底部位置可调
+- **样式持久化**：字号 10–30、四色、底部位置、延迟，退出重进仍然生效
 - **内嵌轨**：列出文件自带字幕轨，可切换可关闭
 - **编码兼容**：BOM 检测 + UTF-8/GBK 自动回退
-
-### 音频与倍速
-- **音轨切换**：多语言/多声道列表，显示声道数
-- **倍速 0.5x–5.0x**：内部用百分数整数存储，`±` 每次 0.1x，长按连续步进，9 档快捷位，变速不变调，速度持久化
 
 ### 悬浮按钮（核心差异化）
 - 左右**完全独立**：启用、秒数 1–120、直径 36–96dp、透明度 10–100%、位置、常驻、长按连续
@@ -91,6 +102,7 @@ gradle wrapper --gradle-version 8.7
 - 进入专辑记录 `lastAlbumId`，开始播放记录 `lastVideoId`
 - 冷启动按开关直达上次专辑（专辑已删则回退首页）
 - 专辑列表用浅橙底 + 1.5dp 橙边 + 「上次播放」角标标记上次那集，并自动滚动到该位置
+- 可选「自动续播上次视频」：进入专辑直接起播
 
 ### 后台与通知
 - `MediaSessionService` 承载播放器，退后台/锁屏继续播放
@@ -104,13 +116,10 @@ gradle wrapper --gradle-version 8.7
 | 项 | 状态 | 说明 |
 |---|---|---|
 | **VLC / libVLC 兜底内核** | **暂缓** | 见下方说明 |
-| 搜索（专辑内 / 全局） | 未做 | 首页搜索框目前是静态占位 |
-| 播放列表模式 | 未做 | 顺序 / 随机 / 单集循环 / 播完关闭 |
-| 画中画（PiP） | 未做 | 需要 Service 侧配合 |
-| 浅色主题 | 未做 | 目前仅深色 |
-| 字幕样式持久化 | 未做 | 字号/颜色/延迟仅本次播放有效 |
-| 专辑封面自定义 | 未做 | 目前自动抽帧 |
-| 长按 2 倍速加速 | 未做 | 手势里预留了位置 |
+| 浅色主题 | 未做 | token 层是 `object` 常量，改浅色需先重构为 CompositionLocal |
+| 批量操作（多选标记/清除） | 未做 | 目前是单集长按菜单 |
+| 画中画（PiP） | **不需要** | 明确不做 |
+| 截图 | **不需要** | 明确不做 |
 
 ### 关于 VLC（暂缓原因）
 
@@ -135,17 +144,17 @@ app/src/main/java/com/localcinema/app/
 │   ├── PlaybackService.kt       MediaSessionService，持有 ExoPlayer
 │   └── PlayerConnection.kt      MediaController 异步连接
 ├── data/
-│   ├── db/                      Room：albums / videos / playback_state
-│   ├── prefs/                   DataStore：设置、按钮配置、倍速
+│   ├── db/                      Room v3：albums / videos / playback_state
+│   ├── prefs/                   DataStore：设置、按钮配置、播放模式、字幕样式
 │   ├── scanner/                 SAF 扫描、自然排序、格式判定
 │   ├── subtitle/                SRT/VTT/ASS 解析 + 编码探测
 │   ├── thumb/                   抽帧与磁盘缓存
 │   └── repo/                    LibraryRepository / PlaybackRepository
 ├── ui/
 │   ├── nav/AppRoot.kt           四 Tab + 路由 + 冷启动直达
-│   ├── home/                    首页：专辑网格、扫描进度
-│   ├── album/                   专辑详情：Hero、列表、上次播放高亮
-│   ├── player/                  播放页、ViewModel、面板（倍速/字幕/音轨）
+│   ├── home/                    首页：搜索、专辑网格、扫描进度
+│   ├── album/                   专辑详情：Hero、排序、搜索、失效提示、单集菜单
+│   ├── player/                  播放页、ViewModel、面板（倍速/字幕/音轨/更多）
 │   ├── settings/                设置根页、按钮配置页
 │   ├── common/                  自绘开关、占位页
 │   └── theme/                   Color / Type / Dimens / Theme（token）
@@ -189,7 +198,16 @@ SQLite 的 REPLACE 是 `DELETE + INSERT`，DELETE 会触发 `ON DELETE CASCADE`�
 
 控件层有一层全屏黑色渐变（保证文字可读），按钮画在下面会被压暗，看起来像"设了 60% 透明度实际只有 40%"。
 
-**7. 沙箱到 GitHub 的链路不稳**
+**7. 多通道手势不能用多个 `pointerInput`**
+
+Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长按加速」「双击快进」「上下滑音量/亮度」「横滑进度」拆成四个 modifier，会互相抢事件（调音量顺带触发双击）。
+播放页现在只有**一个** `pointerInput` + `awaitEachGesture` 手写状态机，按下先起长按计时，超过 touchSlop 就取消计时转拖动，抬起时按位移判定单击/双击。
+
+**8. `WhileSubscribed` 的 StateFlow 没人订阅时 `.value` 永远是初始值**
+
+`AlbumDetailViewModel.resolveAutoResume()` 一开始读 `autoResume.value`，但页面没 collect 这个流，`WhileSubscribed` 不会启动，值一直是 `false`，导致自动续播永远不触发。改成直接 `settingsStore.settings.first()`。
+
+**9. 沙箱到 GitHub 的链路不稳**
 
 `api.github.com` 稳定，但 `github.com:443`（git 传输）会间歇性 TLS 中断。已把 git 切到 HTTP/1.1 + 短超时重试，成功率从 1/5 提升到约 4/6。推送失败属网络问题，重试即可。
 
@@ -197,10 +215,10 @@ SQLite 的 REPLACE 是 `DELETE + INSERT`，DELETE 会触发 `ON DELETE CASCADE`�
 
 ## 六、已知限制
 
-- 没有 launcher 图标（manifest 未声明 `android:icon`），装出来是系统默认图标
 - ASS 只渲染文本，字体/位置/动画等特效不支持（自解析的边界）
 - 字幕延迟仅对外挂字幕生效，内嵌轨不支持（面板已注明）
 - 首次扫描较慢：每个视频都要读一次时长/分辨率，100 个约 10–20 秒
 - 缩略图首次进专辑逐条生成，滚到哪生成到哪
-- `fallbackToDestructiveMigration()` 仍在，上线前需改为正式 Migration
+- `fallbackToDestructiveMigration()` 仍在（作为迁移失败的最后兜底），上线前应移除
 - 仅深色主题
+- 播放模式是全局设置，不按专辑记忆

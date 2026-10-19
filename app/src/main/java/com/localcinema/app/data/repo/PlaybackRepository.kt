@@ -78,5 +78,22 @@ class PlaybackRepository @Inject constructor(
         )
     }
 
+    /** 手动标记已看完：进度推到结尾，列表显示 ✓ */
+    suspend fun markFinished(video: VideoEntity) {
+        val existing = playbackDao.get(video.id)
+        val duration = if (video.durationMs > 0) video.durationMs else (existing?.durationMs ?: 0L)
+        if (duration <= 0L) return
+        playbackDao.upsert(
+            PlaybackStateEntity(
+                videoId = video.id,
+                positionMs = duration,
+                durationMs = duration,
+                finished = true,
+                playCount = existing?.playCount ?: 0,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
     suspend fun clear(videoId: String) = playbackDao.delete(videoId)
 }

@@ -196,6 +196,27 @@ class LibraryRepository @Inject constructor(
         albumDao.upsert(album.copy(name = trimmed))
     }
 
+    /**
+     * 用用户选的图片替换专辑封面。
+     * 复制进应用私有目录，避免 SAF 临时授权失效后封面变空白。
+     */
+    suspend fun setAlbumCover(album: AlbumEntity, uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = java.io.File(context.filesDir, "covers").apply { mkdirs() }
+            val target = java.io.File(dir, "${album.id}.jpg")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            } ?: return@runCatching false
+            albumDao.upsert(album.copy(coverPath = target.absolutePath))
+            true
+        }.getOrDefault(false)
+    }
+
+    /** 清理本专辑内已被判定失效的记录 */
+    suspend fun clearMissing(albumId: String) = withContext(Dispatchers.IO) {
+        videoDao.deleteMissing(albumId)
+    }
+
     fun resetScanState() {
         _scanState.value = ScanState.Idle
     }

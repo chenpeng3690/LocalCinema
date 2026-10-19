@@ -11,7 +11,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         VideoEntity::class,
         PlaybackStateEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -28,5 +28,14 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE videos ADD COLUMN subtitleUri TEXT")
             }
         }
+
+        /** v2 → v3：记录用户手动挂载的字幕，重扫与重启后仍能自动加载 */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE videos ADD COLUMN manualSubtitleUri TEXT")
+            }
+        }
+
+        val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
     }
 }

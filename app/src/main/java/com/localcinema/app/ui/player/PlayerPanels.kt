@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -41,6 +42,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.ui.AspectRatioFrameLayout
+import com.localcinema.app.data.prefs.PlaylistMode
 import com.localcinema.app.ui.common.PlayerSwitch
 import com.localcinema.app.ui.theme.PlayerColors
 import kotlinx.coroutines.delay
@@ -61,10 +64,12 @@ fun SubtitleSheet(
     prefs: SubtitlePrefs,
     tracks: List<TrackOption>,
     selectedIndex: Int?,
+    manual: Boolean,
     onDismiss: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
     onSelectTrack: (Int?) -> Unit,
     onPickExternal: () -> Unit,
+    onClearManual: () -> Unit,
     onFontSize: (Float) -> Unit,
     onColor: (Long) -> Unit,
     onDelay: (Long) -> Unit
@@ -130,10 +135,34 @@ fun SubtitleSheet(
                 )
                 Spacer(Modifier.width(9.dp))
                 Text(
-                    text = "选择外部字幕文件…",
+                    text = if (manual) "换一份外部字幕…" else "选择外部字幕文件…",
                     fontSize = 12.5.sp,
                     color = PlayerColors.Accent
                 )
+            }
+
+            if (manual) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(9.dp))
+                        .clickable(onClick = onClearManual)
+                        .padding(vertical = 9.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = null,
+                        tint = PlayerColors.TextSecondary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(
+                        text = "恢复自动匹配的字幕",
+                        fontSize = 11.5.sp,
+                        color = PlayerColors.TextSecondary
+                    )
+                }
             }
 
             HorizontalDivider(color = PlayerColors.Divider, modifier = Modifier.padding(vertical = 8.dp))
@@ -473,3 +502,122 @@ private fun StepButton(
 private fun presetLabel(percent: Int): String =
     if (percent % 10 == 0) String.format("%.1f", percent / 100f)
     else String.format("%.2f", percent / 100f)
+
+// ---------------------------------------------------------------------------
+// 播放选项面板：播放模式 / 画面比例 / 定时关闭
+// ---------------------------------------------------------------------------
+
+private val SLEEP_OPTIONS = listOf(0, 15, 30, 60, 90)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MoreSheet(
+    playlistMode: String,
+    aspectMode: Int,
+    sleepRemainingSec: Int?,
+    onDismiss: () -> Unit,
+    onSelectMode: (String) -> Unit,
+    onSelectAspect: (Int) -> Unit,
+    onSelectSleep: (Int) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = PlayerColors.SurfaceElevated,
+        contentColor = PlayerColors.TextPrimary
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 20.dp, end = 20.dp, bottom = 22.dp)
+        ) {
+            Text(text = "播放选项", fontSize = 15.sp, color = PlayerColors.TextPrimary)
+
+            Spacer(Modifier.height(14.dp))
+            PanelLabel("播放模式")
+            OptionRow(
+                options = PlaylistMode.ALL.map { PlaylistMode.label(it) to (it == playlistMode) }
+            ) { index -> onSelectMode(PlaylistMode.ALL[index]) }
+
+            Spacer(Modifier.height(16.dp))
+            PanelLabel("画面比例")
+            OptionRow(
+                options = listOf(
+                    "适应屏幕" to (aspectMode == AspectRatioFrameLayout.RESIZE_MODE_FIT),
+                    "铺满" to (aspectMode == AspectRatioFrameLayout.RESIZE_MODE_FILL),
+                    "裁剪" to (aspectMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM)
+                )
+            ) { index ->
+                onSelectAspect(
+                    when (index) {
+                        0 -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        1 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                        else -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    }
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            PanelLabel(
+                if (sleepRemainingSec != null) {
+                    "定时关闭 · 剩余 ${formatSleepRemaining(sleepRemainingSec)}"
+                } else {
+                    "定时关闭"
+                }
+            )
+            OptionRow(
+                options = SLEEP_OPTIONS.map { minutes ->
+                    (if (minutes == 0) "不开启" else "${minutes}分") to
+                        (minutes == 0 && sleepRemainingSec == null)
+                }
+            ) { index -> onSelectSleep(SLEEP_OPTIONS[index]) }
+
+            Text(
+                text = "定时到点会暂停播放，不关闭应用",
+                fontSize = 9.5.sp,
+                color = PlayerColors.TextTertiary,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+        }
+    }
+}
+
+private fun formatSleepRemaining(seconds: Int): String {
+    val m = seconds / 60
+    val s = seconds % 60
+    return if (m > 0) "${m}分${s}秒" else "${s}秒"
+}
+
+@Composable
+private fun OptionRow(
+    options: List<Pair<String, Boolean>>,
+    onSelect: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        options.forEachIndexed { index, (label, selected) ->
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (selected) PlayerColors.Accent else PlayerColors.ChipBg)
+                    .clickable { onSelect(index) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    fontSize = 10.5.sp,
+                    color = if (selected) PlayerColors.ChipActiveInk else PlayerColors.PlayerToolTint
+                )
+            }
+        }
+    }
+}

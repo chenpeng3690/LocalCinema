@@ -23,19 +23,24 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DriveFileRenameOutline
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -57,9 +62,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -71,25 +79,44 @@ import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
 import com.localcinema.app.data.db.AlbumDao
 import com.localcinema.app.data.db.AlbumEntity
+import com.localcinema.app.data.db.VideoDao
+import com.localcinema.app.data.db.VideoEntity
 import com.localcinema.app.data.repo.LibraryRepository
 import com.localcinema.app.data.repo.ScanState
+import com.localcinema.app.data.scanner.formatDuration
+import com.localcinema.app.ui.player.PlayerActivity
 import com.localcinema.app.ui.theme.Dimens
 import com.localcinema.app.ui.theme.PlayerColors
 import com.localcinema.app.ui.theme.PlayerType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 import kotlin.math.absoluteValue
 
+data class SearchResult(
+    val albums: List<AlbumEntity> = emptyList(),
+    val videos: List<VideoEntity> = emptyList()
+) {
+    val isEmpty: Boolean get() = albums.isEmpty() && videos.isEmpty()
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    albumDao: AlbumDao,
+    private val albumDao: AlbumDao,
+    private val videoDao: VideoDao,
     private val repository: LibraryRepository,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
@@ -98,6 +125,24 @@ class HomeViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val scanState: StateFlow<ScanState> = repository.scanState
+
+    private val _query = MutableStateFlow("")
+    val query: StateFlow<String> = _query.asStateFlow()
+
+    val results: StateFlow<SearchResult> = _query
+        .flatMapLatest { keyword ->
+            val q = keyword.trim()
+            if (q.isEmpty()) {
+                flowOf(SearchResult())
+            } else {
+                combine(albumDao.search(q), videoDao.search(q)) { a, v -> SearchResult(a, v) }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SearchResult())
+
+    fun setQuery(value: String) {
+        _query.value = value
+    }
 
     fun onTreeSelected(treeUri: Uri) {
         viewModelScope.launch {
@@ -139,6 +184,8 @@ fun HomeScreen(
 ) {
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val scanState by viewModel.scanState.collectAsStateWithLifecycle()
+    val query by viewModel.query.collectAsStateWithLifecycle()
+    val results by viewModel.results.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     var menuAlbum by remember { mutableStateOf<AlbumEntity?>(null) }
@@ -159,14 +206,35 @@ fun HomeScreen(
         }
     }
 
+    val searching = query.isNotBlank()
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            HomeHeader(albumCount = albums.size)
+            HomeHeader(
+                albumCount = albums.size,
+                query = query,
+                onQueryChange = viewModel::setQuery
+            )
 
             ScanBanner(state = scanState, onDismiss = viewModel::dismissScan)
 
-            if (albums.isEmpty()) {
-                EmptyAlbumState(
+            when {
+                searching -> SearchResults(
+                    modifier = Modifier.weight(1f),
+                    result = results,
+                    onOpenAlbum = onOpenAlbum,
+                    onOpenVideo = { video ->
+                        context.startActivity(
+                            PlayerActivity.intent(
+                                context = context,
+                                albumId = video.albumId,
+                                videoId = video.id
+                            )
+                        )
+                    }
+                )
+
+                albums.isEmpty() -> EmptyAlbumState(
                     modifier = Modifier.weight(1f),
                     onAddClick = {
                         if (scanState is ScanState.Idle) {
@@ -176,8 +244,8 @@ fun HomeScreen(
                         }
                     }
                 )
-            } else {
-                AlbumGrid(
+
+                else -> AlbumGrid(
                     albums = albums,
                     modifier = Modifier.weight(1f),
                     onOpenAlbum = onOpenAlbum,
@@ -186,7 +254,7 @@ fun HomeScreen(
             }
         }
 
-        if (albums.isNotEmpty()) {
+        if (albums.isNotEmpty() && !searching) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -366,7 +434,11 @@ private fun SheetAction(
 }
 
 @Composable
-private fun HomeHeader(albumCount: Int) {
+private fun HomeHeader(
+    albumCount: Int,
+    query: String,
+    onQueryChange: (String) -> Unit
+) {
     Column(modifier = Modifier.padding(horizontal = Dimens.pagePadding)) {
         Text(
             text = "影音库",
@@ -404,25 +476,201 @@ private fun HomeHeader(albumCount: Int) {
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(Modifier.width(8.dp))
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = PlayerColors.TextPrimary,
+                        fontSize = 12.5.sp
+                    ),
+                    cursorBrush = SolidColor(PlayerColors.Accent),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (query.isEmpty()) {
+                                Text(
+                                    text = "搜索专辑或视频",
+                                    fontSize = 12.5.sp,
+                                    color = PlayerColors.TextTertiary
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                if (query.isNotEmpty()) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "清空",
+                        tint = PlayerColors.TextTertiary,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clickable { onQueryChange("") }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchResults(
+    modifier: Modifier = Modifier,
+    result: SearchResult,
+    onOpenAlbum: (String) -> Unit,
+    onOpenVideo: (VideoEntity) -> Unit
+) {
+    if (result.isEmpty) {
+        Column(
+            modifier = modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Search,
+                contentDescription = null,
+                tint = PlayerColors.TextTertiary,
+                modifier = Modifier.size(26.dp)
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(text = "没有找到匹配的内容", fontSize = 12.sp, color = PlayerColors.TextSecondary)
+        }
+        return
+    }
+
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(
+            start = Dimens.pagePadding,
+            end = Dimens.pagePadding,
+            top = 12.dp,
+            bottom = 40.dp
+        )
+    ) {
+        if (result.albums.isNotEmpty()) {
+            item {
                 Text(
-                    text = "搜索专辑或视频",
-                    fontSize = 12.5.sp,
-                    color = PlayerColors.TextTertiary
+                    text = "专辑 ${result.albums.size}",
+                    style = PlayerType.SectionTitle,
+                    color = PlayerColors.TextPrimary,
+                    modifier = Modifier.padding(vertical = 8.dp)
                 )
             }
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(Dimens.radiusControl))
-                    .background(PlayerColors.Surface),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Tune,
-                    contentDescription = "筛选",
-                    tint = PlayerColors.Icon,
-                    modifier = Modifier.size(15.dp)
+            items(result.albums, key = { "a-${it.id}" }) { album ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Dimens.radiusControl))
+                        .clickable { onOpenAlbum(album.id) }
+                        .padding(vertical = 9.dp, horizontal = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(coverBrush(album.name)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val cover = album.coverPath
+                        if (cover != null) {
+                            AsyncImage(
+                                model = File(cover),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.matchParentSize()
+                            )
+                        } else {
+                            Text(
+                                text = album.name.take(1),
+                                fontSize = 14.sp,
+                                color = PlayerColors.CoverText
+                            )
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 11.dp)
+                    ) {
+                        Text(
+                            text = album.name,
+                            style = PlayerType.ListTitle,
+                            color = PlayerColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "专辑",
+                            style = PlayerType.Caption,
+                            color = PlayerColors.TextTertiary,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        if (result.videos.isNotEmpty()) {
+            item {
+                Text(
+                    text = "视频 ${result.videos.size}",
+                    style = PlayerType.SectionTitle,
+                    color = PlayerColors.TextPrimary,
+                    modifier = Modifier.padding(top = 14.dp, bottom = 8.dp)
                 )
+            }
+            items(result.videos, key = { "v-${it.id}" }) { video ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Dimens.radiusControl))
+                        .clickable { onOpenVideo(video) }
+                        .padding(vertical = 9.dp, horizontal = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(PlayerColors.Surface),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.VideoFile,
+                            contentDescription = null,
+                            tint = PlayerColors.TextTertiary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 11.dp)
+                    ) {
+                        Text(
+                            text = video.displayName,
+                            style = PlayerType.ListTitle,
+                            color = PlayerColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = formatDuration(video.durationMs),
+                            style = PlayerType.Caption,
+                            color = PlayerColors.TextTertiary,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        tint = PlayerColors.TextTertiary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
             }
         }
     }
