@@ -177,7 +177,7 @@ fun SubtitleSheet(
                 DelayButton("+1s") { onDelay(1_000) }
                 Spacer(Modifier.weight(1f))
                 Text(
-                    text = "调整字幕相对画面的快慢",
+                    text = "延迟仅对外挂字幕生效",
                     fontSize = 9.5.sp,
                     color = PlayerColors.TextTertiary
                 )

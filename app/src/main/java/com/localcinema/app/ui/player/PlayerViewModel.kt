@@ -11,14 +11,14 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
-import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.exoplayer.ExoPlayer
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
 import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.scanner.NaturalOrder
-import com.localcinema.app.data.scanner.VideoFormats
+import com.localcinema.app.data.subtitle.SubtitleRepository
+import com.localcinema.app.data.subtitle.TimedCue
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
@@ -26,13 +26,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** 可切换的轨道（音轨 / 字幕轨） */
+/** 可切换的轨道。index = -1 代表外挂字幕 */
 data class TrackOption(val index: Int, val label: String)
 
 /** 字幕显示参数 */
@@ -49,6 +50,7 @@ class PlayerViewModel @Inject constructor(
     @ApplicationContext context: Context,
     videoDao: VideoDao,
     private val playbackRepository: PlaybackRepository,
+    private val subtitleRepository: SubtitleRepository,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -87,12 +89,23 @@ class PlayerViewModel @Inject constructor(
     private val _subtitleText = MutableStateFlow("")
     val subtitleText: StateFlow<String> = _subtitleText.asStateFlow()
 
-    /** 已渲染过的 Cue 缓存，用于支持自定义延迟 */
-    private val cueCache = ArrayList<Cue>()
+    /** 外挂字幕（自解析，支持延迟） */
+    private var externalCues: List<TimedCue> = emptyList()
+    private var externalActive: Boolean = false
+
+    private val _externalSubtitleName = MutableStateFlow<String?>(null)
 
     private val _textTracks = MutableStateFlow<List<TrackOption>>(emptyList())
-    val textTracks: StateFlow<List<TrackOption>> = _textTracks.asStateFlow()
 
+    /** 内嵌轨 + 外挂字幕（index = -1）合并后的可选项 */
+    val textTracks: StateFlow<List<TrackOption>> = combine(
+        _textTracks,
+        _externalSubtitleName
+    ) { embedded, externalName ->
+        if (externalName == null) embedded else embedded + TrackOption(EXTERNAL_INDEX, "外挂字幕 · $externalName")
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** null = 关闭；-1 = 外挂；>=0 = 内嵌轨索引 */
     private val _selectedTextIndex = MutableStateFlow<Int?>(null)
     val selectedTextIndex: StateFlow<Int?> = _selectedTextIndex.asStateFlow()
 
@@ -115,18 +128,16 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            /** 内嵌字幕走这里；外挂字幕自己渲染，不接收 */
             override fun onCues(cueGroup: CueGroup) {
-                cueGroup.cues.forEach { cue ->
-                    val duplicated = cueCache.any {
-                        it.startTime == cue.startTime && it.endTime == cue.endTime
-                    }
-                    if (!duplicated) cueCache.add(cue)
+                if (externalActive) return
+                if (!_subtitlePrefs.value.enabled) {
+                    if (_subtitleText.value.isNotEmpty()) _subtitleText.value = ""
+                    return
                 }
-                // 只保留最近一分钟内的字幕，避免无限增长
-                if (cueCache.size > 200) {
-                    val cutoff = player.currentPosition - 60_000
-                    cueCache.removeAll { it.endTime < cutoff }
-                }
+                val text = cueGroup.cues
+                    .joinToString("\n") { it.text?.toString().orEmpty() }
+                if (text != _subtitleText.value) _subtitleText.value = text
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -135,8 +146,10 @@ class PlayerViewModel @Inject constructor(
                     val format = group.mediaTrackGroup.getFormat(0)
                     TrackOption(index, format.label ?: format.language ?: "字幕 ${index + 1}")
                 }
-                _selectedTextIndex.value =
-                    textGroups.indexOfFirst { it.isSelected }.takeIf { it >= 0 }
+                if (!externalActive) {
+                    _selectedTextIndex.value =
+                        textGroups.indexOfFirst { it.isSelected }.takeIf { it >= 0 }
+                }
 
                 val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
                 _audioTracks.value = audioGroups.mapIndexed { index, group ->
@@ -164,20 +177,20 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        // 字幕文本按 150ms 刷新，保证延迟调节跟手
+        // 外挂字幕按「播放位置 + 延迟」筛选，120ms 刷新
         viewModelScope.launch {
             while (true) {
                 val prefs = _subtitlePrefs.value
-                if (prefs.enabled) {
-                    val pos = player.currentPosition + prefs.delayMs
-                    val text = cueCache
-                        .filter { pos >= it.startTime && pos <= it.endTime }
-                        .joinToString("\n") { it.text?.toString().orEmpty() }
+                if (!prefs.enabled) {
+                    if (_subtitleText.value.isNotEmpty()) _subtitleText.value = ""
+                } else if (externalActive && externalCues.isNotEmpty()) {
+                    val position = player.currentPosition + prefs.delayMs
+                    val text = externalCues.asSequence()
+                        .filter { position >= it.startMs && position <= it.endMs }
+                        .joinToString("\n") { it.text }
                     if (text != _subtitleText.value) _subtitleText.value = text
-                } else if (_subtitleText.value.isNotEmpty()) {
-                    _subtitleText.value = ""
                 }
-                delay(150)
+                delay(120)
             }
         }
     }
@@ -191,10 +204,13 @@ class PlayerViewModel @Inject constructor(
             playbackRepository.markStarted(video)
 
             _currentVideo.value = video
-            cueCache.clear()
+            externalCues = emptyList()
+            externalActive = false
+            _externalSubtitleName.value = null
+            _selectedTextIndex.value = null
             _subtitleText.value = ""
 
-            player.setMediaItem(buildMediaItem(video))
+            player.setMediaItem(MediaItem.fromUri(video.uri))
             player.prepare()
             if (startMs > 0L) {
                 player.seekTo(startMs)
@@ -205,54 +221,35 @@ class PlayerViewModel @Inject constructor(
                 }
             }
             player.playWhenReady = true
+
+            // 扫描阶段配对好的同名外挂字幕
+            video.subtitleUri?.let { loadSubtitleFile(Uri.parse(it)) }
         }
     }
 
-    /** 视频 + 同名外挂字幕一起交给 ExoPlayer */
-    private fun buildMediaItem(video: VideoEntity): MediaItem {
-        val builder = MediaItem.Builder().setUri(video.uri)
-        val subtitle = video.subtitleUri
-        if (!subtitle.isNullOrBlank()) {
-            val subtitleUri = Uri.parse(subtitle)
-            val name = subtitleUri.lastPathSegment ?: "subtitle.srt"
-            builder.setSubtitleConfigurations(
-                listOf(
-                    MediaItem.SubtitleConfiguration.Builder(subtitleUri)
-                        .setMimeType(VideoFormats.subtitleMimeType(name))
-                        .setLanguage("und")
-                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                        .build()
-                )
-            )
+    private suspend fun loadSubtitleFile(uri: Uri) {
+        val name = uri.lastPathSegment ?: "subtitle"
+        val cues = subtitleRepository.load(uri, name)
+        if (cues.isEmpty()) {
+            _resumeHint.value = "字幕解析失败：${name.take(24)}"
+            return
         }
-        return builder.build()
-    }
-
-    /** 手动挂载外部字幕文件，保持当前播放位置 */
-    fun loadExternalSubtitle(uri: Uri, displayName: String) {
-        val video = _currentVideo.value ?: return
-        val position = player.currentPosition
-        val wasPlaying = player.isPlaying
-        cueCache.clear()
-
-        val item = MediaItem.Builder()
-            .setUri(video.uri)
-            .setSubtitleConfigurations(
-                listOf(
-                    MediaItem.SubtitleConfiguration.Builder(uri)
-                        .setMimeType(VideoFormats.subtitleMimeType(displayName))
-                        .setLanguage("und")
-                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                        .build()
-                )
-            )
-            .build()
-
-        player.setMediaItem(item)
-        player.prepare()
-        player.seekTo(position)
-        player.playWhenReady = wasPlaying
+        externalCues = cues
+        externalActive = true
+        _externalSubtitleName.value = name
+        _selectedTextIndex.value = EXTERNAL_INDEX
         _subtitlePrefs.value = _subtitlePrefs.value.copy(enabled = true)
+
+        // 关闭内嵌字幕轨，避免和外挂字幕重叠显示
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+    }
+
+    /** 手动挂载字幕：只解析文件，不重建播放器，不打断播放 */
+    fun loadExternalSubtitle(uri: Uri) {
+        viewModelScope.launch { loadSubtitleFile(uri) }
     }
 
     fun togglePlay() {
@@ -326,21 +323,38 @@ class PlayerViewModel @Inject constructor(
         _subtitlePrefs.value = _subtitlePrefs.value.copy(bottomPaddingDp = dp.coerceIn(8, 160))
     }
 
-    /** index = null 表示关闭字幕 */
+    /** index = null 关闭；-1 外挂；>=0 内嵌轨 */
     fun selectTextTrack(index: Int?) {
-        val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
         val builder = player.trackSelectionParameters.buildUpon()
 
-        if (index == null || index !in groups.indices) {
-            builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            _selectedTextIndex.value = null
-        } else {
-            builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                .setOverrideForType(TrackSelectionOverride(groups[index].mediaTrackGroup, 0))
-            _selectedTextIndex.value = index
+        when {
+            index == null -> {
+                externalActive = false
+                builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                _selectedTextIndex.value = null
+            }
+
+            index == EXTERNAL_INDEX -> {
+                if (externalCues.isEmpty()) return
+                externalActive = true
+                builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                _selectedTextIndex.value = EXTERNAL_INDEX
+            }
+
+            else -> {
+                val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                if (index !in groups.indices) return
+                externalActive = false
+                builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .setOverrideForType(TrackSelectionOverride(groups[index].mediaTrackGroup, 0))
+                _selectedTextIndex.value = index
+            }
         }
         player.trackSelectionParameters = builder.build()
+        _subtitleText.value = ""
     }
 
     fun selectAudioTrack(index: Int) {
@@ -363,6 +377,7 @@ class PlayerViewModel @Inject constructor(
     companion object {
         const val KEY_ALBUM_ID = "albumId"
         const val KEY_VIDEO_ID = "videoId"
+        const val EXTERNAL_INDEX = -1
     }
 }
 

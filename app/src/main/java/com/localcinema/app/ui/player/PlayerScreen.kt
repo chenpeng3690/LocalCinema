@@ -124,7 +124,7 @@ fun PlayerScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            viewModel.loadExternalSubtitle(uri, uri.lastPathSegment ?: "subtitle.srt")
+            viewModel.loadExternalSubtitle(uri)
             Toast.makeText(context, "已挂载字幕", Toast.LENGTH_SHORT).show()
         }
     }
