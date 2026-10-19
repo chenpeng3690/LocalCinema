@@ -16,7 +16,7 @@ object VideoFormats {
     )
 
     /** 小于 1MB 的多为预告片、广告、损坏文件 */
-    const val MIN_SIZE_BYTES = 1L * 1024 * 1024
+    const val MIN_SIZE_BYTES = 128L * 1024
 
     private val NAME_BLACKLIST = listOf("sample", "预告", "广告", "trailer")
 
@@ -48,7 +48,8 @@ object VideoFormats {
 
     fun shouldIgnoreFile(name: String, size: Long): Boolean {
         if (name.startsWith('.')) return true
-        if (size in 0 until MIN_SIZE_BYTES) return true
+        // size = 0 表示 provider 没有返回大小，不能据此判定"过小"，否则整目录都会被误杀
+        if (size > 0 && size < MIN_SIZE_BYTES) return true
         return NAME_BLACKLIST.any { name.contains(it, ignoreCase = true) }
     }
 

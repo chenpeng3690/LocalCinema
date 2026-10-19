@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -19,7 +20,8 @@ interface AlbumDao {
     @Query("SELECT * FROM albums WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): AlbumEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /** 必须用 Upsert：REPLACE 会先 DELETE，触发 videos 的级联删除 */
+    @Upsert
     suspend fun upsert(album: AlbumEntity)
 
     @Query("UPDATE albums SET lastAccessedAt = :timestamp WHERE id = :albumId")
@@ -47,10 +49,11 @@ interface VideoDao {
     @Query("SELECT * FROM videos WHERE albumId = :albumId AND uri = :uri LIMIT 1")
     suspend fun findByUri(albumId: String, uri: String): VideoEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /** 必须用 Upsert：REPLACE 会级联删掉 playback_state，重扫即丢进度 */
+    @Upsert
     suspend fun upsertAll(videos: List<VideoEntity>)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun upsert(video: VideoEntity)
 
     @Query("UPDATE videos SET missing = 1 WHERE id = :id")

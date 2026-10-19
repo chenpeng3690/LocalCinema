@@ -116,6 +116,16 @@ class LibraryRepository @Inject constructor(
                 return
             }
 
+            if (scanned.isEmpty()) {
+                // 扫描不到任何视频时，绝不能继续往下走：
+                // 后面的 markMissing 会把已有记录全部标记失效，等于清空专辑
+                _scanState.value = ScanState.Failed(
+                    albumId,
+                    "没有扫描到视频，请检查目录权限或文件格式"
+                )
+                return
+            }
+
             val now = System.currentTimeMillis()
             val entities = scanned.map { v ->
                 VideoEntity(
