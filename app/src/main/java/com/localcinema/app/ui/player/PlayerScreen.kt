@@ -232,7 +232,7 @@ fun PlayerScreen(
                 onBack = onBack,
                 onTogglePlay = viewModel::togglePlay,
                 onPrev = viewModel::playPrevious,
-                onNext = { viewModel.playNext(auto = false) },
+                onNext = { viewModel.playNext() },
                 onSliderStart = {
                     sliderDragging = true
                     sliderValue = positionMs.toFloat()

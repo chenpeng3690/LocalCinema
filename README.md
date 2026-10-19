@@ -5,7 +5,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.3.1（versionCode 6）
+- 当前版本：0.3.2（versionCode 7）
 
 ---
 
@@ -90,6 +90,7 @@ gradle wrapper --gradle-version 8.9
 - **进度记忆**：每视频独立记录，5 秒心跳 + 暂停 + 退后台 + 播完四个时机落库
 - **续播规则**：从上次位置 **-5 秒** 开始；距结尾不足 10 秒视为看完，从头播
 - **播放模式**：顺序 / 单集循环 / 随机 / 播完停止，四态在「更多」面板切换
+- **上下集切换**：工具条「上一集 / 下一集」在本专辑内切换，到边界时顶部提示「已经是第一集 / 最后一集」
 - **下一集倒计时**：播完弹「N 秒后播放下一集」，可取消或立即播放；可在设置里关掉改成直接跳
 - **手势**：左半屏上下滑调亮度、右半屏上下滑调音量、水平滑拖进度、双击快退/快进
 - **长按加速**：按住画面临时切到 1.5x / 2.0x / 3.0x（可关），松开还原，不改用户设置的倍速
@@ -232,13 +233,19 @@ Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长�
 现在拆成 `Palette` 数据类 + `DarkPalette/LightPalette` + `staticCompositionLocalOf`，`PlayerColors.Xxx` 改成 `@Composable @ReadOnlyComposable get()`。
 副作用：这些 token 只能在 `@Composable` 上下文读取，普通函数里用（例如原来的 `DarkColors` 顶层 val）会编译失败。
 
-**10. 卡片整体加 `clip` 会把下方文字切出缺角**
+**10. `WhileSubscribed` 的 StateFlow 没人订阅，`.value` 永远是初始值**
+
+`PlayerViewModel.videos` 原本是 `stateIn(WhileSubscribed(5000), emptyList())`，而播放页从来没 collect 过它。
+结果 `videos.value` 一直是空列表，`playNext/playPrevious` 拿到空列表，上一集下一集全部无效 —— 但首次播放走的是 `videoFlow.first()`，所以看起来"第一次能播，切集就死"。
+改为 `SharingStarted.Eagerly`。凡是要在方法里读 `.value` 的流，都不能用 WhileSubscribed。
+
+**11. 卡片整体加 `clip` 会把下方文字切出缺角**
 
 `Column(...).clip(RoundedCornerShape(13.dp))` 是裁剪**整块内容**，而圆角半径会吃掉四角。
 如果标题/副标题贴着卡片左下角，文字就会被切掉一块。
 正确做法：只给封面/缩略图那个 `Box` 加 clip，外层 Column 不加。
 
-**11. 沙箱到 GitHub 的链路不稳**
+**12. 沙箱到 GitHub 的链路不稳**
 
 `api.github.com` 稳定，但 `github.com:443`（git 传输）会间歇性 TLS 中断。已把 git 切到 HTTP/1.1 + 短超时重试，成功率从 1/5 提升到约 4/6。推送失败属网络问题，重试即可。
 

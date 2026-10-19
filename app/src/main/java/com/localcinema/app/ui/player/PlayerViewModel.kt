@@ -76,8 +76,14 @@ class PlayerViewModel @Inject constructor(
     private val videoFlow = videoDao.observeByAlbum(albumId)
         .map { list -> list.sortedWith(compareBy(NaturalOrder) { it.displayName }) }
 
+    /**
+     * 当前专辑的全部视频。
+     *
+     * 必须用 Eagerly：播放页从来没订阅这个流，若用 WhileSubscribed，
+     * value 会一直停在初始的空列表，上一集/下一集就永远拿不到数据。
+     */
     val videos: StateFlow<List<VideoEntity>> = videoFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _currentVideo = MutableStateFlow<VideoEntity?>(null)
     val currentVideo: StateFlow<VideoEntity?> = _currentVideo.asStateFlow()
@@ -87,6 +93,8 @@ class PlayerViewModel @Inject constructor(
 
     private val _resumeHint = MutableStateFlow<String?>(null)
     val resumeHint: StateFlow<String?> = _resumeHint.asStateFlow()
+
+    private var hintJob: Job? = null
 
     private val _backgroundPlay = MutableStateFlow(false)
 
@@ -328,11 +336,7 @@ class PlayerViewModel @Inject constructor(
             p.prepare()
             if (startMs > 0L) {
                 p.seekTo(startMs)
-                _resumeHint.value = "已跳到 ${formatMs(startMs)}（上次看到这里）"
-                viewModelScope.launch {
-                    delay(3_000)
-                    _resumeHint.value = null
-                }
+                showHint("已跳到 ${formatMs(startMs)}（上次看到这里）", 3_000L)
             }
             p.playWhenReady = true
 
@@ -481,27 +485,35 @@ class PlayerViewModel @Inject constructor(
     // ---------- 播放列表 ----------
 
     /** 手动点「下一集」：忽略「播完停止」，但遵守随机 */
-    fun playNext(auto: Boolean = false) {
-        if (!auto) cancelCountdown()
-        val next = pickNext(auto) ?: run {
-            if (!auto) {
-                attachedPlayer?.pause()
-                _resumeHint.value = "已经是最后一集"
-            }
+    /** 本专辑内可播放的视频（排除失效文件），切集一律基于这个列表 */
+    private fun albumVideos(): List<VideoEntity> = videos.value.filter { !it.missing }
+
+    /**
+     * 手动点「下一集」：遵守随机模式，但不受「播完停止」影响（那是自动连播的规则）。
+     */
+    fun playNext() {
+        cancelCountdown()
+        val next = pickNext()
+        if (next == null) {
+            showHint("已经是最后一集")
             return
         }
         playVideo(next)
     }
 
     fun playPrevious() {
-        val list = videos.value
+        val list = albumVideos()
         val current = _currentVideo.value ?: return
         val index = list.indexOfFirst { it.id == current.id }
-        if (index > 0) playVideo(list[index - 1])
+        if (index <= 0) {
+            showHint("已经是第一集")
+            return
+        }
+        playVideo(list[index - 1])
     }
 
-    private fun pickNext(auto: Boolean): VideoEntity? {
-        val list = videos.value.filter { !it.missing }
+    private fun pickNext(): VideoEntity? {
+        val list = albumVideos()
         if (list.isEmpty()) return null
         val current = _currentVideo.value
 
@@ -511,8 +523,8 @@ class PlayerViewModel @Inject constructor(
         }
 
         val index = list.indexOfFirst { it.id == current?.id }
-        val nextIndex = index + 1
-        return if (nextIndex in list.indices) list[nextIndex] else null
+        if (index < 0) return list.firstOrNull()
+        return list.getOrNull(index + 1)
     }
 
     fun cyclePlaylistMode() {
@@ -539,9 +551,9 @@ class PlayerViewModel @Inject constructor(
             PlaylistMode.STOP_AFTER_ONE -> attachedPlayer?.pause()
 
             else -> {
-                val next = pickNext(auto = true)
+                val next = pickNext()
                 if (next == null) {
-                    _resumeHint.value = "已播完最后一集"
+                    showHint("已播完最后一集")
                     return
                 }
                 if (nextCountdownEnabled) startCountdown(next) else playVideo(next)
@@ -561,7 +573,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun playNextNow() {
-        val next = pickNext(auto = true) ?: return
+        val next = pickNext() ?: return
         cancelCountdown()
         playVideo(next)
     }
@@ -591,11 +603,17 @@ class PlayerViewModel @Inject constructor(
             }
             _sleepRemainingSec.value = null
             attachedPlayer?.pause()
-            _resumeHint.value = "定时关闭：已暂停播放"
-            viewModelScope.launch {
-                delay(3_000)
-                _resumeHint.value = null
-            }
+            showHint("定时关闭：已暂停播放", 3_000L)
+        }
+    }
+
+    /** 顶部提示统一走这里，避免各处自己 delay 导致提示残留或互相覆盖 */
+    private fun showHint(text: String, durationMs: Long = 2_500L) {
+        _resumeHint.value = text
+        hintJob?.cancel()
+        hintJob = viewModelScope.launch {
+            delay(durationMs)
+            _resumeHint.value = null
         }
     }
 
