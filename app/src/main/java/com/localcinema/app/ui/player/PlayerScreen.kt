@@ -7,17 +7,20 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -47,6 +50,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -61,14 +66,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.localcinema.app.data.prefs.JumpButtonConfig
 import com.localcinema.app.ui.theme.PlayerColors
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 private enum class GestureMode { None, Undecided, Seek, Brightness, Volume }
@@ -90,6 +99,8 @@ fun PlayerScreen(
     val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
     val selectedAudioIndex by viewModel.selectedAudioIndex.collectAsStateWithLifecycle()
     val speedPercent by viewModel.speedPercent.collectAsStateWithLifecycle()
+    val jumpLeft by viewModel.jumpLeft.collectAsStateWithLifecycle()
+    val jumpRight by viewModel.jumpRight.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -309,6 +320,39 @@ fun PlayerScreen(
             )
         }
 
+        // ---------- 快退 / 快进悬浮按钮（按配置渲染） ----------
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val containerWidth = maxWidth
+            val containerHeight = maxHeight
+
+            if (!locked) {
+                if (jumpLeft.enabled && (controlsVisible || jumpLeft.constantVisible)) {
+                    ConfigJumpButton(
+                        config = jumpLeft,
+                        forward = false,
+                        containerWidth = containerWidth,
+                        containerHeight = containerHeight,
+                        onTrigger = {
+                            viewModel.seekBy(-jumpLeft.seconds * 1000L)
+                            overlay = "快退 ${jumpLeft.seconds}s"
+                        }
+                    )
+                }
+                if (jumpRight.enabled && (controlsVisible || jumpRight.constantVisible)) {
+                    ConfigJumpButton(
+                        config = jumpRight,
+                        forward = true,
+                        containerWidth = containerWidth,
+                        containerHeight = containerHeight,
+                        onTrigger = {
+                            viewModel.seekBy(jumpRight.seconds * 1000L)
+                            overlay = "快进 ${jumpRight.seconds}s"
+                        }
+                    )
+                }
+            }
+        }
+
         // ---------- 字幕 ----------
         if (subtitlePrefs.enabled && subtitleText.isNotBlank()) {
             Text(
@@ -506,33 +550,21 @@ private fun PlayerControls(
             }
         }
 
-        Row(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
                 .align(Alignment.Center)
-                .padding(horizontal = 26.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .size(54.dp)
+                .clip(CircleShape)
+                .background(PlayerColors.PlayerPlayBg)
+                .clickable(onClick = onTogglePlay),
+            contentAlignment = Alignment.Center
         ) {
-            JumpButton(seconds = 10, forward = false) { onSeekBy(-10_000) }
-
-            Box(
-                modifier = Modifier
-                    .size(54.dp)
-                    .clip(CircleShape)
-                    .background(PlayerColors.PlayerPlayBg)
-                    .clickable(onClick = onTogglePlay),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = if (isPlaying) "暂停" else "播放",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            JumpButton(seconds = 30, forward = true) { onSeekBy(30_000) }
+            Icon(
+                imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                contentDescription = if (isPlaying) "暂停" else "播放",
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
         }
 
         Column(
@@ -602,24 +634,66 @@ private fun IconButtonFlat(onClick: () -> Unit, content: @Composable () -> Unit)
     }
 }
 
+/**
+ * 按用户配置渲染的悬浮按钮。
+ * 位置用屏幕比例换算，换设备不会跑出屏幕；透明度作用于整体（含描边）。
+ */
 @Composable
-private fun JumpButton(seconds: Int, forward: Boolean, onClick: () -> Unit) {
+private fun ConfigJumpButton(
+    config: JumpButtonConfig,
+    forward: Boolean,
+    containerWidth: Dp,
+    containerHeight: Dp,
+    onTrigger: () -> Unit
+) {
+    val size = config.sizeDp.dp
+    val scope = rememberCoroutineScope()
+
+    val x = containerWidth * config.xRatio - size / 2
+    val y = containerHeight * config.yRatio - size / 2
+
     Box(
         modifier = Modifier
-            .size(56.dp)
+            .offset(x = x, y = y)
+            .size(size)
+            .graphicsLayer(alpha = config.opacity)
             .clip(CircleShape)
             .background(PlayerColors.PlayerJumpBg)
-            .clickable(onClick = onClick),
+            .border(1.dp, Color(0x47FFFFFF), CircleShape)
+            .pointerInput(config) {
+                detectTapGestures(
+                    onPress = {
+                        var repeated = false
+                        val job = scope.launch {
+                            if (config.longPressRepeat) {
+                                delay(300)
+                                repeated = true
+                                while (isActive) {
+                                    onTrigger()
+                                    delay(300)
+                                }
+                            }
+                        }
+                        tryAwaitRelease()
+                        job.cancel()
+                        if (!repeated) onTrigger()
+                    }
+                )
+            },
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = if (forward) "»" else "«",
                 color = Color.White,
-                fontSize = 16.sp,
-                lineHeight = 16.sp
+                fontSize = (config.sizeDp * 0.26f).sp,
+                lineHeight = (config.sizeDp * 0.26f).sp
             )
-            Text(text = seconds.toString(), color = Color.White, fontSize = 12.sp)
+            Text(
+                text = config.seconds.toString(),
+                color = Color.White,
+                fontSize = (config.sizeDp * 0.22f).sp
+            )
         }
     }
 }

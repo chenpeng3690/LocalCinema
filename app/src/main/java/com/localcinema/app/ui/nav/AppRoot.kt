@@ -44,6 +44,7 @@ import com.localcinema.app.R
 import com.localcinema.app.ui.album.AlbumDetailScreen
 import com.localcinema.app.ui.common.PlaceholderScreen
 import com.localcinema.app.ui.home.HomeScreen
+import com.localcinema.app.ui.settings.JumpButtonSettingsScreen
 import com.localcinema.app.ui.settings.SettingsScreen
 import com.localcinema.app.ui.theme.Dimens
 import com.localcinema.app.ui.theme.PlayerColors
@@ -98,7 +99,18 @@ fun AppRoot() {
             }
             composable(AppTab.Folder.route) { PlaceholderScreen(title = "文件夹") }
             composable(AppTab.Recent.route) { PlaceholderScreen(title = "最近") }
-            composable(AppTab.Settings.route) { SettingsScreen() }
+            composable(AppTab.Settings.route) {
+                SettingsScreen(
+                    onOpenJumpSettings = { side -> navController.navigate("jump/$side") }
+                )
+            }
+
+            composable(
+                route = "jump/{side}",
+                arguments = listOf(navArgument("side") { type = NavType.StringType })
+            ) {
+                JumpButtonSettingsScreen(onBack = { navController.popBackStack() })
+            }
 
             composable(
                 route = "album/{albumId}",

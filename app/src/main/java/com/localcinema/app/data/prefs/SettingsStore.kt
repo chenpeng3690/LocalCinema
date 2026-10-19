@@ -34,7 +34,9 @@ data class AppSettings(
     val backgroundPlay: Boolean = false,
     val defaultLandscape: Boolean = true,
     /** 播放速度，百分数：100 = 1.0x，范围 50–500 */
-    val speedPercent: Int = 100
+    val speedPercent: Int = 100,
+    val jumpLeft: JumpButtonConfig = JumpButtonConfig.DEFAULT_LEFT,
+    val jumpRight: JumpButtonConfig = JumpButtonConfig.DEFAULT_RIGHT
 )
 
 @Singleton
@@ -53,6 +55,8 @@ class SettingsStore @Inject constructor(
         val backgroundPlay = booleanPreferencesKey("background_play")
         val defaultLandscape = booleanPreferencesKey("default_landscape")
         val speedPercent = intPreferencesKey("speed_percent")
+        val jumpLeft = stringPreferencesKey("jump_left")
+        val jumpRight = stringPreferencesKey("jump_right")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -67,7 +71,15 @@ class SettingsStore @Inject constructor(
             keepScreenOn = p[Keys.keepScreenOn] ?: true,
             backgroundPlay = p[Keys.backgroundPlay] ?: false,
             defaultLandscape = p[Keys.defaultLandscape] ?: true,
-            speedPercent = p[Keys.speedPercent] ?: 100
+            speedPercent = p[Keys.speedPercent] ?: 100,
+            jumpLeft = JumpButtonConfig.fromJson(
+                p[Keys.jumpLeft],
+                JumpButtonConfig.DEFAULT_LEFT
+            ),
+            jumpRight = JumpButtonConfig.fromJson(
+                p[Keys.jumpRight],
+                JumpButtonConfig.DEFAULT_RIGHT
+            )
         )
     }
 
@@ -114,5 +126,13 @@ class SettingsStore @Inject constructor(
 
     suspend fun setSpeedPercent(value: Int) {
         context.dataStore.edit { it[Keys.speedPercent] = value.coerceIn(50, 500) }
+    }
+
+    suspend fun setJumpLeft(config: JumpButtonConfig) {
+        context.dataStore.edit { it[Keys.jumpLeft] = config.normalized().toJson() }
+    }
+
+    suspend fun setJumpRight(config: JumpButtonConfig) {
+        context.dataStore.edit { it[Keys.jumpRight] = config.normalized().toJson() }
     }
 }

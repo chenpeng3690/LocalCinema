@@ -15,6 +15,7 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.exoplayer.ExoPlayer
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
+import com.localcinema.app.data.prefs.JumpButtonConfig
 import com.localcinema.app.data.prefs.SettingsStore
 import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.scanner.NaturalOrder
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -84,6 +86,13 @@ class PlayerViewModel @Inject constructor(
     /** 播放速度，百分数：100 = 1.0x */
     private val _speedPercent = MutableStateFlow(100)
     val speedPercent: StateFlow<Int> = _speedPercent.asStateFlow()
+
+    /** 左右悬浮快退/快进按钮配置 */
+    private val _jumpLeft = MutableStateFlow(JumpButtonConfig.DEFAULT_LEFT)
+    val jumpLeft: StateFlow<JumpButtonConfig> = _jumpLeft.asStateFlow()
+
+    private val _jumpRight = MutableStateFlow(JumpButtonConfig.DEFAULT_RIGHT)
+    val jumpRight: StateFlow<JumpButtonConfig> = _jumpRight.asStateFlow()
 
     private val _resumeHint = MutableStateFlow<String?>(null)
     val resumeHint: StateFlow<String?> = _resumeHint.asStateFlow()
@@ -168,9 +177,13 @@ class PlayerViewModel @Inject constructor(
             }
         })
 
+        // 设置变化时实时同步（用户可能在播放页改了按钮配置）
         viewModelScope.launch {
-            val saved = settingsStore.settings.first().speedPercent
-            applySpeed(saved.coerceIn(50, 500), persist = false)
+            settingsStore.settings.collect { settings ->
+                applySpeed(settings.speedPercent.coerceIn(50, 500), persist = false)
+                _jumpLeft.value = settings.jumpLeft
+                _jumpRight.value = settings.jumpRight
+            }
         }
 
         viewModelScope.launch {

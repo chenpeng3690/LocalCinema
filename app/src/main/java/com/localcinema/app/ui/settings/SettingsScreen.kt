@@ -67,7 +67,10 @@ class SettingsViewModel @Inject constructor(
 }
 
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(
+    onOpenJumpSettings: (String) -> Unit,
+    viewModel: SettingsViewModel = hiltViewModel()
+) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -108,6 +111,20 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                 title = "音调补偿",
                 value = "开启",
                 onClick = { toast(context, "音调补偿将在阶段三接入") }
+            )
+        }
+
+        SettingGroup(title = "播放控制") {
+            SettingValueRow(
+                title = "快退按钮",
+                value = with(settings.jumpLeft) { "${seconds}s · ${if (constantVisible) "常驻" else "非常驻"}" },
+                onClick = { onOpenJumpSettings("left") }
+            )
+            SettingDivider()
+            SettingValueRow(
+                title = "快进按钮",
+                value = with(settings.jumpRight) { "${seconds}s · ${if (constantVisible) "常驻" else "非常驻"}" },
+                onClick = { onOpenJumpSettings("right") }
             )
         }
 
