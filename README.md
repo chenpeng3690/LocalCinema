@@ -5,7 +5,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.3.2（versionCode 7）
+- 当前版本：0.3.3（versionCode 8）
 
 ---
 
@@ -187,7 +187,25 @@ app/src/main/java/com/localcinema/app/
 
 ---
 
-## 五、踩过的坑（改代码前先看这里）
+## 五、播放性能诊断
+
+排查「快进后要等一下」时，把 `PlaybackService.ENABLE_SEEK_DIAGNOSTICS` 置为 `true`（当前默认开），
+Logcat 过滤 `tag:SeekPerf`，每次 seek 会输出一条拆解：
+
+```
+──── seek 12:20 → 12:50  (+30.0s) ────
+  io  64KB  47ms
+  io  64KB  12ms
+  total 210ms  |  io 59ms / 2块 / 128KB  |  decode≈151ms  |  重新缓冲
+```
+
+判读：
+- `io` 占比高 → 瓶颈在读文件（SAF provider、SD 卡、随机读慢）
+- `decode` 占比高 → 解码器在从关键帧往目标帧解，改用 `SeekParameters.CLOSEST_SYNC`
+- 出现 `命中缓冲区` 但仍慢 → 纯粹是解码，同上
+- `decoder = OMX.google.*` → 走的是软解，先解决解码再谈 seek
+
+## 六、踩过的坑（改代码前先看这里）
 
 **1. `@Insert(REPLACE)` + 外键 CASCADE = 更新即删除子记录**
 
@@ -251,7 +269,7 @@ Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长�
 
 ---
 
-## 六、已知限制
+## 七、已知限制
 
 - ASS 只渲染文本，字体/位置/动画等特效不支持（自解析的边界）
 - 字幕延迟仅对外挂字幕生效，内嵌轨不支持（面板已注明）

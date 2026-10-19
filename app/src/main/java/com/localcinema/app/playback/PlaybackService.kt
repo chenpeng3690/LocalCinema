@@ -23,6 +23,11 @@ class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
 
+    /** 打开后 Logcat 过滤 `tag:SeekPerf` 可看到每次 seek 的耗时拆解 */
+    private companion object {
+        const val ENABLE_SEEK_DIAGNOSTICS = true
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -37,6 +42,12 @@ class PlaybackService : MediaSessionService() {
             // 拔耳机 / 蓝牙断开时自动暂停
             .setHandleAudioBecomingNoisy(true)
             .build()
+
+        // 排查「快进后要等一下」用：定位瓶颈在读文件还是解码。
+        // 平时关掉，否则每次加载都会刷日志。
+        if (ENABLE_SEEK_DIAGNOSTICS) {
+            player.addAnalyticsListener(SeekDiagnostics())
+        }
 
         mediaSession = MediaSession.Builder(this, player).build()
     }
