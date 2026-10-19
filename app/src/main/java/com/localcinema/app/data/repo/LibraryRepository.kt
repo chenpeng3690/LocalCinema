@@ -167,6 +167,24 @@ class LibraryRepository @Inject constructor(
         }
     }
 
+    /**
+     * 删除专辑：先清缩略图文件，再删库。
+     * videos 与 playback_state 由 Room 外键级联删除，不需要手工处理。
+     */
+    suspend fun deleteAlbum(album: AlbumEntity) = withContext(Dispatchers.IO) {
+        videoDao.listByAlbum(album.id).forEach { video ->
+            runCatching { thumbs.fileFor(video.id).delete() }
+        }
+        album.coverPath?.let { path -> runCatching { java.io.File(path).delete() } }
+        albumDao.deleteById(album.id)
+    }
+
+    suspend fun renameAlbum(album: AlbumEntity, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        albumDao.upsert(album.copy(name = trimmed))
+    }
+
     fun resetScanState() {
         _scanState.value = ScanState.Idle
     }

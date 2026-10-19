@@ -1,9 +1,13 @@
 package com.localcinema.app.ui.player
 
+import android.app.Activity
+import android.content.Context
+import android.media.AudioManager
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -36,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,8 +49,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -55,6 +64,9 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.localcinema.app.ui.theme.PlayerColors
 import kotlinx.coroutines.delay
+import kotlin.math.abs
+
+private enum class GestureMode { None, Undecided, Seek, Brightness, Volume }
 
 @Composable
 fun PlayerScreen(
@@ -65,18 +77,39 @@ fun PlayerScreen(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val resumeHint by viewModel.resumeHint.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val activity = context as? Activity
+
+    val audioManager = remember {
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
+    val maxVolume = remember {
+        audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    }
 
     var controlsVisible by remember { mutableStateOf(true) }
+    var locked by remember { mutableStateOf(false) }
+    var aspectMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+    var overlay by remember { mutableStateOf<String?>(null) }
+
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
 
-    var dragging by remember { mutableStateOf(false) }
-    var dragValue by remember { mutableFloatStateOf(0f) }
+    // 进度条拖动
+    var sliderDragging by remember { mutableStateOf(false) }
+    var sliderValue by remember { mutableFloatStateOf(0f) }
 
-    // 播放进度轮询（400ms，拖动时不覆盖）
+    // 画面手势拖动（亮度/音量/进度）
+    var gestureMode by remember { mutableStateOf(GestureMode.None) }
+    var gestureStartX by remember { mutableFloatStateOf(0f) }
+    var gestureStartY by remember { mutableFloatStateOf(0f) }
+    var baseSeek by remember { mutableLongStateOf(0L) }
+    var baseVolume by remember { mutableIntStateOf(0) }
+    var baseBrightness by remember { mutableFloatStateOf(0.5f) }
+    var seekPreview by remember { mutableStateOf<Long?>(null) }
+
     LaunchedEffect(Unit) {
         while (true) {
-            if (!dragging) {
+            if (!sliderDragging) {
                 positionMs = viewModel.positionMs()
                 durationMs = viewModel.durationMs()
             }
@@ -84,9 +117,8 @@ fun PlayerScreen(
         }
     }
 
-    // 播放中 3 秒自动隐藏控件
-    LaunchedEffect(controlsVisible, isPlaying) {
-        if (controlsVisible && isPlaying) {
+    LaunchedEffect(controlsVisible, isPlaying, locked) {
+        if (controlsVisible && isPlaying && !locked) {
             delay(3_000)
             controlsVisible = false
         }
@@ -106,43 +138,186 @@ fun PlayerScreen(
                     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
                 }
             },
+            update = { view -> view.resizeMode = aspectMode },
             modifier = Modifier.fillMaxSize()
         )
 
-        // 点击切换控件（在控件层之下，不拦截按钮）
-        val interaction = remember { MutableInteractionSource() }
+        // ---------- 手势层 ----------
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(interactionSource = interaction, indication = null) {
-                    controlsVisible = !controlsVisible
+                // 单击 / 双击
+                .pointerInput(locked) {
+                    if (locked) return@pointerInput
+                    detectTapGestures(
+                        onTap = { controlsVisible = !controlsVisible },
+                        onDoubleTap = { offset: Offset ->
+                            if (offset.x < size.width / 2f) {
+                                viewModel.seekBy(-10_000)
+                                overlay = "快退 10s"
+                            } else {
+                                viewModel.seekBy(30_000)
+                                overlay = "快进 30s"
+                            }
+                        }
+                    )
+                }
+                // 拖动：左右滑 = 进度，左半屏上下 = 亮度，右半屏上下 = 音量
+                .pointerInput(locked) {
+                    if (locked) return@pointerInput
+                    detectDragGestures(
+                        onDragStart = { offset: Offset ->
+                            gestureStartX = offset.x
+                            gestureStartY = offset.y
+                            baseSeek = viewModel.positionMs()
+                            baseVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                            val brightness = activity?.window?.attributes?.screenBrightness ?: -1f
+                            baseBrightness = if (brightness < 0f) 0.5f else brightness
+                            gestureMode = GestureMode.Undecided
+                        },
+                        onDragEnd = {
+                            seekPreview?.let { target -> viewModel.seekTo(target) }
+                            seekPreview = null
+                            gestureMode = GestureMode.None
+                            overlay = null
+                        },
+                        onDragCancel = {
+                            seekPreview = null
+                            gestureMode = GestureMode.None
+                            overlay = null
+                        },
+                        onDrag = { change, _ ->
+                            val dx = change.position.x - gestureStartX
+                            val dy = change.position.y - gestureStartY
+
+                            if (gestureMode == GestureMode.Undecided) {
+                                gestureMode = when {
+                                    abs(dx) > abs(dy) -> GestureMode.Seek
+                                    gestureStartX < size.width / 2f -> GestureMode.Brightness
+                                    else -> GestureMode.Volume
+                                }
+                            }
+
+                            when (gestureMode) {
+                                GestureMode.Seek -> {
+                                    val total = if (durationMs > 0) durationMs else 1L
+                                    val delta = (dx / size.width.toFloat() * total * 1.5f).toLong()
+                                    val target = (baseSeek + delta).coerceIn(0L, total)
+                                    seekPreview = target
+                                    overlay = "跳到 ${formatMs(target)}"
+                                }
+
+                                GestureMode.Brightness -> {
+                                    val heightPx = size.height.toFloat().coerceAtLeast(1f)
+                                    val target = (baseBrightness - dy / heightPx * 1.4f)
+                                        .coerceIn(0.01f, 1f)
+                                    activity?.window?.let { window ->
+                                        val attrs = window.attributes
+                                        attrs.screenBrightness = target
+                                        window.attributes = attrs
+                                    }
+                                    overlay = "亮度 ${(target * 100).toInt()}%"
+                                }
+
+                                GestureMode.Volume -> {
+                                    val heightPx = size.height.toFloat().coerceAtLeast(1f)
+                                    val delta = (-dy / heightPx * maxVolume * 1.4f).toInt()
+                                    val target = (baseVolume + delta).coerceIn(0, maxVolume)
+                                    audioManager.setStreamVolume(
+                                        AudioManager.STREAM_MUSIC, target, 0
+                                    )
+                                    overlay = "音量 ${target * 100 / maxVolume}%"
+                                }
+
+                                else -> Unit
+                            }
+                        }
+                    )
                 }
         )
 
-        if (controlsVisible) {
+        if (!locked && controlsVisible) {
             PlayerControls(
                 title = current?.displayName ?: "",
                 isPlaying = isPlaying,
-                positionMs = if (dragging) dragValue.toLong() else positionMs,
+                positionMs = seekPreview ?: if (sliderDragging) sliderValue.toLong() else positionMs,
                 durationMs = durationMs,
-                dragging = dragging,
-                dragValue = dragValue,
+                aspectMode = aspectMode,
                 onBack = onBack,
                 onTogglePlay = viewModel::togglePlay,
                 onSeekBy = viewModel::seekBy,
                 onPrev = viewModel::playPrevious,
                 onNext = { viewModel.playNext(auto = false) },
-                onDragStart = { dragging = true },
-                onDrag = { dragValue = it },
-                onDragFinish = {
-                    viewModel.seekTo(dragValue.toLong())
-                    positionMs = dragValue.toLong()
-                    dragging = false
+                onSliderStart = {
+                    sliderDragging = true
+                    sliderValue = positionMs.toFloat()
+                },
+                onSliderChange = { value ->
+                    sliderValue = value
+                    positionMs = value.toLong()
+                },
+                onSliderFinish = {
+                    viewModel.seekTo(sliderValue.toLong())
+                    sliderDragging = false
+                },
+                onLock = {
+                    locked = true
+                    controlsVisible = false
+                },
+                onCycleAspect = {
+                    aspectMode = when (aspectMode) {
+                        AspectRatioFrameLayout.RESIZE_MODE_FIT ->
+                            AspectRatioFrameLayout.RESIZE_MODE_FILL
+                        AspectRatioFrameLayout.RESIZE_MODE_FILL ->
+                            AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    }
+                    overlay = when (aspectMode) {
+                        AspectRatioFrameLayout.RESIZE_MODE_FIT -> "画面：适应屏幕"
+                        AspectRatioFrameLayout.RESIZE_MODE_FILL -> "画面：铺满"
+                        else -> "画面：裁剪"
+                    }
                 },
                 onUnavailable = { label ->
-                    Toast.makeText(context, "$label 将在后续阶段接入", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "$label 将在下一阶段接入", Toast.LENGTH_SHORT).show()
                 }
             )
+        }
+
+        // 锁定态：只留一个解锁按钮
+        if (locked) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 20.dp)
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(PlayerColors.PlayerPlayBg)
+                    .clickable {
+                        locked = false
+                        controlsVisible = true
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.LockOpen,
+                    contentDescription = "解锁",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        overlay?.let { text ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(PlayerColors.Scrim)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Text(text = text, color = Color.White, fontSize = 12.sp)
+            }
         }
 
         resumeHint?.let { hint ->
@@ -166,20 +341,20 @@ private fun PlayerControls(
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
-    dragging: Boolean,
-    dragValue: Float,
+    aspectMode: Int,
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeekBy: (Long) -> Unit,
     onPrev: () -> Unit,
     onNext: () -> Unit,
-    onDragStart: () -> Unit,
-    onDrag: (Float) -> Unit,
-    onDragFinish: () -> Unit,
+    onSliderStart: () -> Unit,
+    onSliderChange: (Float) -> Unit,
+    onSliderFinish: () -> Unit,
+    onLock: () -> Unit,
+    onCycleAspect: () -> Unit,
     onUnavailable: (String) -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
-        // 上下渐变压暗，保证文字可读
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -193,7 +368,6 @@ private fun PlayerControls(
                 )
         )
 
-        // 顶部
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -225,11 +399,7 @@ private fun PlayerControls(
                     .background(PlayerColors.RateBadge)
                     .padding(horizontal = 7.dp, vertical = 3.dp)
             ) {
-                Text(
-                    text = "1.0x",
-                    color = PlayerColors.RateBadgeInk,
-                    fontSize = 10.sp
-                )
+                Text(text = "1.0x", color = PlayerColors.RateBadgeInk, fontSize = 10.sp)
             }
             Spacer(Modifier.width(8.dp))
             IconButtonFlat(onClick = { onUnavailable("更多菜单") }) {
@@ -242,7 +412,6 @@ private fun PlayerControls(
             }
         }
 
-        // 中部：左 10s / 播放暂停 / 右 30s
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -272,7 +441,6 @@ private fun PlayerControls(
             JumpButton(seconds = 30, forward = true) { onSeekBy(30_000) }
         }
 
-        // 底部
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -280,12 +448,12 @@ private fun PlayerControls(
                 .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
         ) {
             Slider(
-                value = if (dragging) dragValue else positionMs.toFloat(),
+                value = positionMs.toFloat(),
                 onValueChange = { value ->
-                    if (!dragging) onDragStart()
-                    onDrag(value)
+                    onSliderStart()
+                    onSliderChange(value)
                 },
-                onValueChangeFinished = onDragFinish,
+                onValueChangeFinished = onSliderFinish,
                 valueRange = 0f..(if (durationMs > 0) durationMs.toFloat() else 1f),
                 colors = SliderDefaults.colors(
                     thumbColor = Color.White,
@@ -301,16 +469,8 @@ private fun PlayerControls(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = formatMs(positionMs),
-                    color = PlayerColors.PlayerTimeText,
-                    fontSize = 10.sp
-                )
-                Text(
-                    text = formatMs(durationMs),
-                    color = PlayerColors.PlayerTimeText,
-                    fontSize = 10.sp
-                )
+                Text(text = formatMs(positionMs), color = PlayerColors.PlayerTimeText, fontSize = 10.sp)
+                Text(text = formatMs(durationMs), color = PlayerColors.PlayerTimeText, fontSize = 10.sp)
             }
 
             Row(
@@ -324,8 +484,16 @@ private fun PlayerControls(
                 ToolItem(icon = Icons.Rounded.SkipNext, label = "下一集", onClick = onNext)
                 ToolItem(icon = Icons.Rounded.Speed, label = "倍速", onClick = { onUnavailable("倍速") })
                 ToolItem(icon = Icons.Rounded.Subtitles, label = "字幕", onClick = { onUnavailable("字幕") })
-                ToolItem(icon = Icons.Rounded.AspectRatio, label = "比例", onClick = { onUnavailable("画面比例") })
-                ToolItem(icon = Icons.Rounded.Lock, label = "锁定", onClick = { onUnavailable("锁屏") })
+                ToolItem(
+                    icon = Icons.Rounded.AspectRatio,
+                    label = when (aspectMode) {
+                        AspectRatioFrameLayout.RESIZE_MODE_FILL -> "铺满"
+                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "裁剪"
+                        else -> "适应"
+                    },
+                    onClick = onCycleAspect
+                )
+                ToolItem(icon = Icons.Rounded.Lock, label = "锁定", onClick = onLock)
             }
         }
     }
@@ -361,18 +529,14 @@ private fun JumpButton(seconds: Int, forward: Boolean, onClick: () -> Unit) {
                 fontSize = 16.sp,
                 lineHeight = 16.sp
             )
-            Text(
-                text = seconds.toString(),
-                color = Color.White,
-                fontSize = 12.sp
-            )
+            Text(text = seconds.toString(), color = Color.White, fontSize = 12.sp)
         }
     }
 }
 
 @Composable
 private fun ToolItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     onClick: () -> Unit
 ) {
