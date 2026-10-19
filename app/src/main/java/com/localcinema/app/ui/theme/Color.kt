@@ -114,9 +114,6 @@ val LocalPalette = staticCompositionLocalOf { DarkPalette }
  */
 object PlayerColors {
 
-    val IsDark: Boolean
-        @Composable @ReadOnlyComposable get() = LocalPalette.current.isDark
-
     /** 全局背景，禁止使用纯黑 #000000 */
     val Bg: Color
         @Composable @ReadOnlyComposable get() = LocalPalette.current.bg

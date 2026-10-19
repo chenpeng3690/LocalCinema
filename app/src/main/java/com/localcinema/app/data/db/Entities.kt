@@ -8,9 +8,8 @@ import androidx.room.PrimaryKey
 
 /** 专辑的目录访问方式 */
 object AccessMode {
-    const val SAF = "SAF"           // SAF 持久化 URI，主通道
-    const val FILE = "FILE"         // 完整文件权限下的裸路径
-    const val MEDIASTORE = "MEDIASTORE"
+    /** SAF 持久化 URI —— 目前唯一的访问方式 */
+    const val SAF = "SAF"
 }
 
 object SortMode {
@@ -18,7 +17,6 @@ object SortMode {
     const val ADDED = "added_at"
     const val MODIFIED = "modified_at"
     const val DURATION = "duration"
-    const val MANUAL = "manual"
 }
 
 @Entity(tableName = "albums")
@@ -27,7 +25,7 @@ data class AlbumEntity(
     val name: String,
     /** SAF 持久化 URI，accessMode = SAF 时使用 */
     val treeUri: String?,
-    /** 完整文件权限下的绝对路径，accessMode = FILE 时使用 */
+    /** 展示用的裸路径，可能为空 */
     val rootPath: String?,
     val coverPath: String?,
     val sortMode: String = SortMode.NAME_NATURAL,

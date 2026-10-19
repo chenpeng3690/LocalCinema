@@ -2,13 +2,12 @@ package com.localcinema.app.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
  * 字号阶梯（sp），与设计 token 一一对应。
- * 数字类文本（时长、集数）请配合 [TabularNumberStyle] 使用，避免进度跳动时宽度抖动。
+ * 时长等数字类文本建议配合 tabular 数字特性，避免进度跳动时宽度抖动。
  */
 object PlayerType {
     /** 页面大标题：影音库、设置 */
@@ -69,12 +68,6 @@ object PlayerType {
         letterSpacing = 0.2.sp
     )
 }
-
-/** 等宽数字，用于时长、进度、集数 */
-val TabularNumberStyle = TextStyle(
-    fontFeatureSettings = "tnum",
-    fontFamily = FontFamily.Default
-)
 
 val PlayerTypography = Typography(
     headlineLarge = PlayerType.PageTitle,

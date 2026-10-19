@@ -14,21 +14,27 @@ android {
         applicationId = "com.localcinema.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.3.6"
+        versionCode = 12
+        versionName = "0.4.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
     buildTypes {
         debug {
+            // 开发期不混淆，保证断点与堆栈可读
             isMinifyEnabled = false
         }
         release {
-            isMinifyEnabled = false
+            // R8 代码压缩 + 资源压缩：移除未引用的类（material-icons-extended 里
+            // 有 5000+ 图标，只用到三十来个，不 shrink 会占 14MB）
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 用 debug 签名，方便直接安装试用；正式发布前必须换成正式签名
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -42,9 +48,23 @@ android {
     buildFeatures {
         compose = true
     }
+
+    lint {
+        // release 构建时跳过 lint：它和 R8 同时跑会顶爆容器内存
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/DEPENDENCIES",
+                "/META-INF/LICENSE*",
+                "/META-INF/NOTICE*",
+                "/META-INF/*.kotlin_module",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json"
+            )
         }
     }
 }

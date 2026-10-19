@@ -27,14 +27,8 @@ object Dimens {
     /** 进度条高度，全站统一 */
     val progressHeight = 3.dp
 
-    /** 图标默认尺寸与描边 */
-    val iconSize = 16.dp
-    val iconSizeSmall = 15.dp
+    /** 底部导航图标尺寸 */
     val iconSizeLarge = 18.dp
-    const val iconStroke = 2.0f
-
-    /** 触控最小高度 */
-    val minTouchTarget = 48.dp
 
     /** 底部导航高度 */
     val bottomBarHeight = 56.dp

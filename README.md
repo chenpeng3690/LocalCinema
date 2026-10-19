@@ -4,6 +4,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
+- 安装包：**release 3.3MB**（R8 压缩后），debug 约 22MB
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
 - 当前版本：0.3.4（versionCode 9）
 
@@ -40,6 +41,26 @@ app/proguard-rules.pro
 ```powershell
 gradle wrapper --gradle-version 8.9
 ```
+
+### 构建配置
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| `release.isMinifyEnabled` | `true` | R8 代码压缩，移除未引用的类 |
+| `release.isShrinkResources` | `true` | 移除未引用的资源 |
+| `release.signingConfig` | **debug keystore** | 方便直接安装试用，正式发布必须换正式签名 |
+| `debug.isMinifyEnabled` | `false` | 开发期保留可读堆栈与断点 |
+| `lint.checkReleaseBuilds` | `false` | lint 与 R8 并发会超容器内存 |
+
+**体积构成**（release）：
+
+| 项 | 压缩前 | 说明 |
+|---|---|---|
+| `classes.dex`（单 dex） | 4.5MB | 从 7 个 dex 合并，依赖 R8 删掉未用类 |
+| 资源 | 约 300KB | shrinkResources 后 |
+| **总计** | **3.3MB** | 对比 debug 的 22MB |
+
+`material-icons-extended` 单独就有 14.3MB（5000+ 图标），实际只用了三十来个。R8 会按引用裁剪，所以不需要手工换成 `material-icons-core`。
 
 ### 环境要求
 
@@ -204,24 +225,18 @@ app/src/main/java/com/localcinema/app/
 
 ### 诊断
 
-## 六、播放性能诊断
+## 六、播放性能回归验证
 
-排查「快进后要等一下」时，把 `PlaybackService.ENABLE_SEEK_DIAGNOSTICS` 置为 `true`（当前默认开），
-Logcat 过滤 `tag:SeekPerf`，每次 seek 会输出一条拆解：
+调优后（容差 5 秒 + 20 秒前向缓冲 + 30 秒回退缓冲）实测：
 
-```
-──── seek 12:20 → 12:50  (+30.0s) ────
-  io  64KB  47ms
-  io  64KB  12ms
-  total 210ms  |  io 59ms / 2块 / 128KB  |  decode≈151ms  |  重新缓冲
-```
+| 场景 | 调优前 | 调优后 |
+|---|---|---|
+| 快进 30 秒（中位） | 357ms | **94ms** |
+| 快进 30 秒（最慢） | 662ms | **160ms** |
+| 跨 20 分钟跳转 | 291~755ms | **106~180ms** |
+| 快退 10 秒 | 445~650ms | 231ms |
 
-判读：
-- `io` 占比高 → 瓶颈在读文件（SAF provider、SD 卡、随机读慢）
-- `io` 长期显示 0 是**正常的**：本地文件读取只要几毫秒，且多发生在 seek 事件分发之前；此时看 `total` 与跳转距离是否相关即可
-- `decode` 占比高 → 解码器在从关键帧往目标帧解，改用 `SeekParameters.CLOSEST_SYNC`
-- 出现 `命中缓冲区` 但仍慢 → 纯粹是解码，同上
-- `decoder = OMX.google.*` → 走的是软解，先解决解码再谈 seek
+快退仍偏慢的原因：`backBuffer` 让目标点落在缓冲内，而缓冲内移动读取位置不经过 `SeekParameters`，只能从最近关键帧解码。
 
 ## 七、踩过的坑（改代码前先看这里）
 
