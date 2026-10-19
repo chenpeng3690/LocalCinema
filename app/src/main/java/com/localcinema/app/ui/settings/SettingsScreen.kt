@@ -43,6 +43,7 @@ import com.localcinema.app.ui.common.PlayerSwitch
 import com.localcinema.app.ui.theme.Dimens
 import com.localcinema.app.ui.theme.PlayerColors
 import com.localcinema.app.ui.theme.PlayerType
+import com.localcinema.app.ui.theme.ThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -76,6 +77,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setNextCountdown(value: Boolean) {
         viewModelScope.launch { store.setNextCountdown(value) }
+    }
+
+    fun setThemeMode(mode: String) {
+        viewModelScope.launch { store.setThemeMode(mode) }
     }
 
     fun setPlaylistMode(mode: String) {
@@ -124,6 +129,7 @@ fun SettingsScreen(
 
     var modeDialog by remember { mutableStateOf(false) }
     var speedDialog by remember { mutableStateOf(false) }
+    var themeDialog by remember { mutableStateOf(false) }
     var fontSizeDialog by remember { mutableStateOf(false) }
     var colorDialog by remember { mutableStateOf(false) }
 
@@ -213,6 +219,14 @@ fun SettingsScreen(
             )
         }
 
+        SettingGroup(title = "外观") {
+            SettingValueRow(
+                title = "主题",
+                value = ThemeMode.label(settings.themeMode),
+                onClick = { themeDialog = true }
+            )
+        }
+
         SettingGroup(title = "字幕") {
             SettingValueRow(
                 title = "默认字号",
@@ -297,6 +311,18 @@ fun SettingsScreen(
         ) { percent ->
             viewModel.setLongPressSpeed(percent)
             speedDialog = false
+        }
+    }
+
+    if (themeDialog) {
+        ChoiceDialog(
+            title = "主题",
+            choices = ThemeMode.ALL.map { Choice(ThemeMode.label(it), it) },
+            selected = settings.themeMode,
+            onDismiss = { themeDialog = false }
+        ) { mode ->
+            viewModel.setThemeMode(mode)
+            themeDialog = false
         }
     }
 

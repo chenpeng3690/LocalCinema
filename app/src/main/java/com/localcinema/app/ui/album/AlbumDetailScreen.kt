@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Image
@@ -250,6 +251,57 @@ class AlbumDetailViewModel @Inject constructor(
         }
     }
 
+    // ---------- 多选 ----------
+    private val _selectMode = MutableStateFlow(false)
+    val selectMode: StateFlow<Boolean> = _selectMode.asStateFlow()
+
+    private val _selected = MutableStateFlow<Set<String>>(emptySet())
+    val selected: StateFlow<Set<String>> = _selected.asStateFlow()
+
+    fun enterSelectMode() {
+        _selectMode.value = true
+        _selected.value = emptySet()
+    }
+
+    fun exitSelectMode() {
+        _selectMode.value = false
+        _selected.value = emptySet()
+    }
+
+    fun toggleSelect(id: String) {
+        _selected.update { if (id in it) it - id else it + id }
+    }
+
+    /** 全选 / 取消全选。只作用于当前过滤结果，不会把搜索外的视频也选上 */
+    fun toggleSelectAll() {
+        val all = rows.value.map { it.video.id }.toSet()
+        _selected.value = if (all.isNotEmpty() && _selected.value.containsAll(all)) {
+            emptySet()
+        } else {
+            all
+        }
+    }
+
+    fun batchMarkFinished() = viewModelScope.launch {
+        val ids = _selected.value
+        rows.value.filter { it.video.id in ids }.forEach { playbackRepository.markFinished(it.video) }
+        exitSelectMode()
+    }
+
+    fun batchClearProgress() = viewModelScope.launch {
+        _selected.value.forEach { playbackRepository.clear(it) }
+        exitSelectMode()
+    }
+
+    fun batchRemove() = viewModelScope.launch {
+        val ids = _selected.value
+        rows.value.filter { it.video.id in ids }.forEach { row ->
+            runCatching { thumbs.fileFor(row.video.id).delete() }
+            videoDao.deleteById(row.video.id)
+        }
+        exitSelectMode()
+    }
+
     fun clearMissing() {
         viewModelScope.launch { libraryRepository.clearMissing(albumId) }
     }
@@ -290,6 +342,8 @@ fun AlbumDetailScreen(
     val missing by viewModel.missing.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val sortMode by viewModel.sortMode.collectAsStateWithLifecycle()
+    val selectMode by viewModel.selectMode.collectAsStateWithLifecycle()
+    val selected by viewModel.selected.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val sheetState = rememberModalBottomSheetState()
@@ -345,14 +399,20 @@ fun AlbumDetailScreen(
         TopBar(
             title = album?.name ?: "",
             searchOpen = searchOpen,
+            selectMode = selectMode,
+            selectedCount = selected.size,
             onBack = onBack,
             onToggleSearch = {
                 searchOpen = !searchOpen
                 if (!searchOpen) viewModel.setQuery("")
-            }
+            },
+            onToggleSelect = {
+                if (selectMode) viewModel.exitSelectMode() else viewModel.enterSelectMode()
+            },
+            onSelectAll = viewModel::toggleSelectAll
         )
 
-        if (searchOpen) {
+        if (searchOpen && !selectMode) {
             OutlinedTextField(
                 value = query,
                 onValueChange = viewModel::setQuery,
@@ -369,8 +429,8 @@ fun AlbumDetailScreen(
 
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 32.dp)
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             item {
                 AlbumHero(
@@ -467,12 +527,27 @@ fun AlbumDetailScreen(
                     VideoRow(
                         ui = row,
                         thumbPath = thumbs[row.video.id],
-                        isLastPlayed = row.video.id == lastVideoId,
-                        onClick = { openPlayer(row.video.id) },
-                        onLongClick = { menuVideo = row }
+                        isLastPlayed = row.video.id == lastVideoId && !selectMode,
+                        selectMode = selectMode,
+                        selected = row.video.id in selected,
+                        onClick = {
+                            if (selectMode) viewModel.toggleSelect(row.video.id) else openPlayer(row.video.id)
+                        },
+                        onLongClick = {
+                            if (selectMode) viewModel.toggleSelect(row.video.id) else menuVideo = row
+                        }
                     )
                 }
             }
+        }
+
+        if (selectMode) {
+            BatchBar(
+                count = selected.size,
+                onMarkFinished = viewModel::batchMarkFinished,
+                onClearProgress = viewModel::batchClearProgress,
+                onRemove = viewModel::batchRemove
+            )
         }
     }
 
@@ -617,8 +692,12 @@ fun AlbumDetailScreen(
 private fun TopBar(
     title: String,
     searchOpen: Boolean,
+    selectMode: Boolean,
+    selectedCount: Int,
     onBack: () -> Unit,
-    onToggleSearch: () -> Unit
+    onToggleSearch: () -> Unit,
+    onToggleSelect: () -> Unit,
+    onSelectAll: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -630,18 +709,22 @@ private fun TopBar(
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .clickable(onClick = onBack),
+                .clickable(onClick = if (selectMode) onToggleSelect else onBack),
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                contentDescription = "返回",
+                imageVector = if (selectMode) {
+                    Icons.Rounded.Close
+                } else {
+                    Icons.AutoMirrored.Rounded.ArrowBack
+                },
+                contentDescription = if (selectMode) "退出多选" else "返回",
                 tint = PlayerColors.TextPrimary,
                 modifier = Modifier.size(18.dp)
             )
         }
         Text(
-            text = title,
+            text = if (selectMode) "已选 $selectedCount 项" else title,
             style = PlayerType.TopBarTitle,
             color = PlayerColors.TextPrimary,
             maxLines = 1,
@@ -650,19 +733,46 @@ private fun TopBar(
                 .weight(1f)
                 .padding(start = 4.dp)
         )
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .clickable(onClick = onToggleSearch),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = if (searchOpen) Icons.Rounded.Close else Icons.Rounded.Search,
-                contentDescription = if (searchOpen) "关闭搜索" else "搜索",
-                tint = PlayerColors.TextPrimary,
-                modifier = Modifier.size(18.dp)
+
+        if (selectMode) {
+            Text(
+                text = "全选",
+                fontSize = 12.sp,
+                color = PlayerColors.Accent,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .clickable(onClick = onSelectAll)
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggleSearch),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (searchOpen) Icons.Rounded.Close else Icons.Rounded.Search,
+                    contentDescription = if (searchOpen) "关闭搜索" else "搜索",
+                    tint = PlayerColors.TextPrimary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggleSelect),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Checklist,
+                    contentDescription = "多选",
+                    tint = PlayerColors.TextPrimary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -829,17 +939,20 @@ private fun VideoRow(
     ui: VideoRowUi,
     thumbPath: String?,
     isLastPlayed: Boolean,
+    selectMode: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
     val video = ui.video
     val highlightShape = RoundedCornerShape(11.dp)
+    val highlighted = isLastPlayed || selected
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = Dimens.pagePadding, vertical = 9.dp)
             .then(
-                if (isLastPlayed) {
+                if (highlighted) {
                     Modifier
                         .clip(highlightShape)
                         .background(PlayerColors.AccentSoft)
@@ -852,6 +965,27 @@ private fun VideoRow(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (selectMode) {
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .then(
+                        if (selected) {
+                            Modifier.background(PlayerColors.Accent)
+                        } else {
+                            Modifier.border(1.5.dp, PlayerColors.Chevron, CircleShape)
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (selected) {
+                    Text(text = "✓", fontSize = 10.sp, color = Color.White)
+                }
+            }
+            Spacer(Modifier.width(9.dp))
+        }
+
         Box(
             modifier = Modifier
                 .width(96.dp)
@@ -987,4 +1121,74 @@ private fun heroBrush(seed: String): Brush {
     val palettes = PlayerColors.CoverPalettes
     val idx = seed.hashCode().absoluteValue % palettes.size
     return Brush.linearGradient(palettes[idx])
+}
+
+@Composable
+private fun BatchBar(
+    count: Int,
+    onMarkFinished: () -> Unit,
+    onClearProgress: () -> Unit,
+    onRemove: () -> Unit
+) {
+    val enabled = count > 0
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(PlayerColors.SurfaceElevated)
+            .navigationBarsPadding()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BatchAction(
+            icon = Icons.Rounded.CheckCircle,
+            label = "标记已看",
+            enabled = enabled,
+            onClick = onMarkFinished
+        )
+        BatchAction(
+            icon = Icons.Rounded.Restore,
+            label = "清进度",
+            enabled = enabled,
+            onClick = onClearProgress
+        )
+        BatchAction(
+            icon = Icons.Rounded.DeleteOutline,
+            label = "移除记录",
+            enabled = enabled,
+            danger = true,
+            onClick = onRemove
+        )
+    }
+}
+
+@Composable
+private fun BatchAction(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    danger: Boolean = false,
+    onClick: () -> Unit
+) {
+    val tint = when {
+        !enabled -> PlayerColors.TextTertiary.copy(alpha = 0.45f)
+        danger -> PlayerColors.Accent
+        else -> PlayerColors.TextSecondary
+    }
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(17.dp)
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(text = label, fontSize = 9.5.sp, color = tint)
+    }
 }

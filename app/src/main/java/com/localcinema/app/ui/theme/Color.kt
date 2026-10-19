@@ -1,68 +1,223 @@
 package com.localcinema.app.ui.theme
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 /**
+ * 界面配色。
+ *
+ * 之所以要从「常量 object」改成「CompositionLocal + 两套 Palette」：
+ * 常量在编译期就固定了，运行时切主题不会触发重组，改了就只是换了个变量而已。
+ *
+ * 注意：播放页覆盖在视频画面上的那些颜色（遮罩、按钮底、进度条未播段）
+ * 不参与主题切换，见文件末尾的常量区 —— 视频底色不可预测，浅色主题下也必须是白字深遮罩。
+ */
+@Immutable
+data class Palette(
+    val isDark: Boolean,
+    val bg: Color,
+    val surface: Color,
+    val surfaceElevated: Color,
+    val line: Color,
+    val textPrimary: Color,
+    val textSecondary: Color,
+    val textTertiary: Color,
+    val accent: Color,
+    val accentSoft: Color,
+    val accentGradientStart: Color,
+    val accentGradientEnd: Color,
+    val rateBadge: Color,
+    val rateBadgeInk: Color,
+    val doneGreen: Color,
+    val icon: Color,
+    val switchOff: Color,
+    val groupLabel: Color,
+    val chevron: Color,
+    val trackInactive: Color,
+    val divider: Color,
+    val scrim: Color,
+    val bottomBarBg: Color,
+    val bottomBarDivider: Color,
+    val stepperBg: Color,
+    val chipBg: Color,
+    val chipActiveInk: Color
+)
+
+val DarkPalette = Palette(
+    isDark = true,
+    bg = Color(0xFF08080A),
+    surface = Color(0xFF16161A),
+    surfaceElevated = Color(0xFF1F1F25),
+    line = Color(0xFF2A2A32),
+    textPrimary = Color(0xFFF0F0F4),
+    textSecondary = Color(0xFF8A8A96),
+    textTertiary = Color(0xFF6C6C78),
+    accent = Color(0xFFFF6B45),
+    accentSoft = Color(0x24FF6B45),
+    accentGradientStart = Color(0xFFFF7B56),
+    accentGradientEnd = Color(0xFFF04E27),
+    rateBadge = Color(0xFFFFC24A),
+    rateBadgeInk = Color(0xFF0D0D10),
+    doneGreen = Color(0xFF3E8E7E),
+    icon = Color(0xFFB9B9C4),
+    switchOff = Color(0xFF33333D),
+    groupLabel = Color(0xFF9A9AA6),
+    chevron = Color(0xFF5A5A66),
+    trackInactive = Color(0x1FFFFFFF),
+    divider = Color(0x0DFFFFFF),
+    scrim = Color(0xB8000000),
+    bottomBarBg = Color(0xEB101014),
+    bottomBarDivider = Color(0x0FFFFFFF),
+    stepperBg = Color(0xFF2C2C36),
+    chipBg = Color(0xFF26262E),
+    chipActiveInk = Color(0xFF18181C)
+)
+
+val LightPalette = Palette(
+    isDark = false,
+    bg = Color(0xFFF2F2F5),
+    surface = Color(0xFFFFFFFF),
+    surfaceElevated = Color(0xFFFFFFFF),
+    line = Color(0xFFE2E2E9),
+    textPrimary = Color(0xFF17171C),
+    textSecondary = Color(0xFF6A6A76),
+    textTertiary = Color(0xFF95959F),
+    accent = Color(0xFFF25730),
+    accentSoft = Color(0x1FF25730),
+    accentGradientStart = Color(0xFFFF7B56),
+    accentGradientEnd = Color(0xFFE84A22),
+    rateBadge = Color(0xFFF0A81E),
+    rateBadgeInk = Color(0xFF17171C),
+    doneGreen = Color(0xFF2E7D6E),
+    icon = Color(0xFF5C5C68),
+    switchOff = Color(0xFFD5D5DD),
+    groupLabel = Color(0xFF76767F),
+    chevron = Color(0xFFB4B4BE),
+    trackInactive = Color(0x14000000),
+    divider = Color(0x0F000000),
+    scrim = Color(0x99000000),
+    bottomBarBg = Color(0xF7FFFFFF),
+    bottomBarDivider = Color(0x14000000),
+    stepperBg = Color(0xFFEDEDF1),
+    chipBg = Color(0xFFEDEDF1),
+    chipActiveInk = Color(0xFFFFFFFF)
+)
+
+val LocalPalette = staticCompositionLocalOf { DarkPalette }
+
+/**
  * 全站唯一的颜色来源。
- * 任何界面禁止直接写 Color(0xFF...)，必须引用这里的 token。
+ * 界面色随主题变化（CompositionLocal），播放页覆盖层颜色是常量。
  */
 object PlayerColors {
+
+    val IsDark: Boolean
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.isDark
+
     /** 全局背景，禁止使用纯黑 #000000 */
-    val Bg = Color(0xFF08080A)
+    val Bg: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.bg
 
     /** 卡片、搜索框、普通按钮底 */
-    val Surface = Color(0xFF16161A)
+    val Surface: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.surface
 
     /** 二级面板、弹层 */
-    val SurfaceElevated = Color(0xFF1F1F25)
+    val SurfaceElevated: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.surfaceElevated
 
     /** 分隔线、描边 */
-    val Line = Color(0xFF2A2A32)
+    val Line: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.line
 
-    val TextPrimary = Color(0xFFF0F0F4)
-    val TextSecondary = Color(0xFF8A8A96)
-    val TextTertiary = Color(0xFF6C6C78)
+    val TextPrimary: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.textPrimary
+
+    val TextSecondary: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.textSecondary
+
+    val TextTertiary: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.textTertiary
 
     /** 主题色：进度条、上次播放标签/描边、FAB、选中态 */
-    val Accent = Color(0xFFFF6B45)
+    val Accent: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.accent
 
-    /** 主题色 14% 透明底：上次播放项背景、tint 按钮 */
-    val AccentSoft = Color(0x24FF6B45)
+    /** 主题色低透明底：上次播放项背景 */
+    val AccentSoft: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.accentSoft
 
-    val AccentGradientStart = Color(0xFFFF7B56)
-    val AccentGradientEnd = Color(0xFFF04E27)
+    val AccentGradientStart: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.accentGradientStart
+
+    val AccentGradientEnd: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.accentGradientEnd
 
     /** 倍速角标：唯一允许的第二种强调色 */
-    val RateBadge = Color(0xFFFFC24A)
-    val RateBadgeInk = Color(0xFF0D0D10)
+    val RateBadge: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.rateBadge
 
-    /** 「未看完 / 已完成」状态角标 */
-    val DoneGreen = Color(0xFF3E8E7E)
+    val RateBadgeInk: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.rateBadgeInk
+
+    /** 「已完成」状态角标 */
+    val DoneGreen: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.doneGreen
 
     /** 线性图标默认色 */
-    val Icon = Color(0xFFB9B9C4)
+    val Icon: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.icon
 
     /** 自绘开关关闭态轨道 */
-    val SwitchOff = Color(0xFF33333D)
+    val SwitchOff: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.switchOff
 
     /** 设置分组标题 */
-    val GroupLabel = Color(0xFF9A9AA6)
+    val GroupLabel: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.groupLabel
 
     /** 列表右侧箭头 */
-    val Chevron = Color(0xFF5A5A66)
+    val Chevron: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.chevron
 
-    /** 进度条轨道 12% */
-    val TrackInactive = Color(0x1FFFFFFF)
+    /** 进度条轨道 */
+    val TrackInactive: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.trackInactive
 
-    /** 列表分隔线 5% */
-    val Divider = Color(0x0DFFFFFF)
+    /** 列表分隔线 */
+    val Divider: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.divider
 
-    /** 浮层遮罩 72% */
-    val Scrim = Color(0xB8000000)
+    /** 浮层遮罩 */
+    val Scrim: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.scrim
 
     /** 底部导航背景（半透明，压住内容） */
-    val BottomBarBg = Color(0xEB101014)
-    val BottomBarDivider = Color(0x0FFFFFFF)
+    val BottomBarBg: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.bottomBarBg
+
+    val BottomBarDivider: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.bottomBarDivider
+
+    /** 倍速面板：步进圆钮底 */
+    val StepperBg: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.stepperBg
+
+    /** 倍速/选项面板：快捷档位底 */
+    val ChipBg: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.chipBg
+
+    /** 选中档位文字 */
+    val ChipActiveInk: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.chipActiveInk
+
+    // ------------------------------------------------------------------
+    // 以下为播放页与封面覆盖层颜色：不参与主题切换
+    // 它们叠在视频画面/封面上，底色不可预测，必须固定为深色遮罩 + 白字
+    // ------------------------------------------------------------------
 
     /** 封面占位文字 */
     val CoverText = Color(0xE6FFFFFF)
@@ -74,7 +229,7 @@ object PlayerColors {
     val PlayerScrimTop = Color(0x99000000)
     val PlayerScrimBottom = Color(0xB3000000)
 
-    /** 播放页快进/快退圆钮底（白 16%） */
+    /** 播放页快退/快进圆钮底（白 16%） */
     val PlayerJumpBg = Color(0x29FFFFFF)
 
     /** 播放页中央播放钮底（黑 42%） */
@@ -85,15 +240,6 @@ object PlayerColors {
 
     /** 播放页工具条图标与文字 */
     val PlayerToolTint = Color(0xFFAFAFBB)
-
-    /** 倍速面板：步进圆钮底 */
-    val StepperBg = Color(0xFF2C2C36)
-
-    /** 倍速面板：快捷档位底 */
-    val ChipBg = Color(0xFF26262E)
-
-    /** 倍速面板：选中档位文字 */
-    val ChipActiveInk = Color(0xFF18181C)
 
     /** 播放页时间文字 */
     val PlayerTimeText = Color(0xFFC6C6D0)
@@ -107,7 +253,7 @@ object PlayerColors {
 
     /**
      * 无封面时的占位渐变（深色四色板）。
-     * 真实封面接入后仅在抽帧失败时使用。
+     * 上面压白字，所以不随主题变浅。
      */
     val CoverPalettes = listOf(
         listOf(Color(0xFF3A4B60), Color(0xFF141D28)),

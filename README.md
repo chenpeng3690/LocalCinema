@@ -5,7 +5,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.2.0（versionCode 2）
+- 当前版本：0.2.1（versionCode 3）
 
 ---
 
@@ -65,6 +65,7 @@ gradle wrapper --gradle-version 8.9
 - **专辑管理**：长按卡片 → 重新扫描 / 重命名 / 删除（只删记录，不动视频文件）
 - **失效文件**：扫描发现文件已不在时标 `missing`，专辑页顶部提示，可一键清理记录
 - **单集操作**：长按列表项 → 播放 / 标记已看完 / 清除观看进度 / 从专辑移除
+- **批量操作**：顶栏「☑」进多选 → 勾选多项 → 标记已看 / 清进度 / 移除记录；支持全选（只作用于当前搜索结果）
 
 ### 搜索
 - **全局搜索**：首页搜索框实时匹配专辑名与视频名，结果分组，点视频直接起播
@@ -82,6 +83,10 @@ gradle wrapper --gradle-version 8.9
 - **锁屏**：一键锁定，控件全隐、手势失效，只留解锁按钮
 - **画面比例**：适应 / 铺满 / 裁剪
 - **倍速 0.5x–5.0x**：内部用百分数整数存储，`±` 每次 0.1x，长按连续步进，9 档快捷位，变速不变调，速度持久化
+
+### 外观
+- **深色 / 浅色 / 跟随系统**三态，即时生效，系统栏图标明暗跟着切
+- 播放页与封面覆盖层**不参与主题**：它们叠在视频/封面上，底色不可预测，固定深色遮罩 + 白字
 
 ### 字幕
 - **外挂自动配对**：扫描时把同目录同名 `srt / ass / ssa / vtt / sub / smi` 与视频绑定
@@ -116,8 +121,6 @@ gradle wrapper --gradle-version 8.9
 | 项 | 状态 | 说明 |
 |---|---|---|
 | **VLC / libVLC 兜底内核** | **暂缓** | 见下方说明 |
-| 浅色主题 | 未做 | token 层是 `object` 常量，改浅色需先重构为 CompositionLocal |
-| 批量操作（多选标记/清除） | 未做 | 目前是单集长按菜单 |
 | 画中画（PiP） | **不需要** | 明确不做 |
 | 截图 | **不需要** | 明确不做 |
 
@@ -207,7 +210,13 @@ Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长�
 
 `AlbumDetailViewModel.resolveAutoResume()` 一开始读 `autoResume.value`，但页面没 collect 这个流，`WhileSubscribed` 不会启动，值一直是 `false`，导致自动续播永远不触发。改成直接 `settingsStore.settings.first()`。
 
-**9. 沙箱到 GitHub 的链路不稳**
+**9. `object` 常量做不了运行时主题切换**
+
+`PlayerColors` 原本是 `object` + `Color(0xFF...)` 常量。这种写法编译期就定死了值，`CompositionLocal` 换了也没人读——界面不会重组。
+现在拆成 `Palette` 数据类 + `DarkPalette/LightPalette` + `staticCompositionLocalOf`，`PlayerColors.Xxx` 改成 `@Composable @ReadOnlyComposable get()`。
+副作用：这些 token 只能在 `@Composable` 上下文读取，普通函数里用（例如原来的 `DarkColors` 顶层 val）会编译失败。
+
+**10. 沙箱到 GitHub 的链路不稳**
 
 `api.github.com` 稳定，但 `github.com:443`（git 传输）会间歇性 TLS 中断。已把 git 切到 HTTP/1.1 + 短超时重试，成功率从 1/5 提升到约 4/6。推送失败属网络问题，重试即可。
 
@@ -220,5 +229,5 @@ Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长�
 - 首次扫描较慢：每个视频都要读一次时长/分辨率，100 个约 10–20 秒
 - 缩略图首次进专辑逐条生成，滚到哪生成到哪
 - `fallbackToDestructiveMigration()` 仍在（作为迁移失败的最后兜底），上线前应移除
-- 仅深色主题
 - 播放模式是全局设置，不按专辑记忆
+- 深色主题下启动无闪屏；浅色主题冷启动会先看到一帧深色窗口背景（`themes.xml` 的 `windowBackground` 是静态资源，无法跟随应用内设置）

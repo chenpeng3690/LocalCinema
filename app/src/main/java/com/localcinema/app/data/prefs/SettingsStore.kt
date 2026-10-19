@@ -51,7 +51,9 @@ data class AppSettings(
     val subtitleColorArgb: Long = 0xFFFFFFFF,
     /** 字幕延迟，毫秒，仅对外挂字幕生效 */
     val subtitleDelayMs: Long = 0L,
-    val subtitleBottomPadding: Int = 48
+    val subtitleBottomPadding: Int = 48,
+    /** 主题模式：dark / light / system */
+    val themeMode: String = "dark"
 )
 
 @Singleton
@@ -80,6 +82,7 @@ class SettingsStore @Inject constructor(
         val subtitleColorArgb = longPreferencesKey("subtitle_color_argb")
         val subtitleDelayMs = longPreferencesKey("subtitle_delay_ms")
         val subtitleBottomPadding = intPreferencesKey("subtitle_bottom_padding")
+        val themeMode = stringPreferencesKey("theme_mode")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -110,7 +113,8 @@ class SettingsStore @Inject constructor(
             subtitleFontSize = p[Keys.subtitleFontSize] ?: 14f,
             subtitleColorArgb = p[Keys.subtitleColorArgb] ?: 0xFFFFFFFF,
             subtitleDelayMs = p[Keys.subtitleDelayMs] ?: 0L,
-            subtitleBottomPadding = p[Keys.subtitleBottomPadding] ?: 48
+            subtitleBottomPadding = p[Keys.subtitleBottomPadding] ?: 48,
+            themeMode = p[Keys.themeMode] ?: "dark"
         )
     }
 
@@ -197,6 +201,10 @@ class SettingsStore @Inject constructor(
 
     suspend fun setSubtitleDelay(value: Long) {
         context.dataStore.edit { it[Keys.subtitleDelayMs] = value.coerceIn(-60_000L, 60_000L) }
+    }
+
+    suspend fun setThemeMode(value: String) {
+        context.dataStore.edit { it[Keys.themeMode] = value }
     }
 
     suspend fun setSubtitleBottomPadding(value: Int) {
