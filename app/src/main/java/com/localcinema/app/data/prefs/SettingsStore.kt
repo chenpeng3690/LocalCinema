@@ -53,7 +53,9 @@ data class AppSettings(
     val subtitleDelayMs: Long = 0L,
     val subtitleBottomPadding: Int = 48,
     /** 主题模式：dark / light / system */
-    val themeMode: String = "dark"
+    val themeMode: String = "dark",
+    /** 快退/快进后是否在屏幕中央弹出「快进 30s」这类提示 */
+    val jumpHintEnabled: Boolean = true
 )
 
 @Singleton
@@ -83,6 +85,7 @@ class SettingsStore @Inject constructor(
         val subtitleDelayMs = longPreferencesKey("subtitle_delay_ms")
         val subtitleBottomPadding = intPreferencesKey("subtitle_bottom_padding")
         val themeMode = stringPreferencesKey("theme_mode")
+        val jumpHintEnabled = booleanPreferencesKey("jump_hint_enabled")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -114,7 +117,8 @@ class SettingsStore @Inject constructor(
             subtitleColorArgb = p[Keys.subtitleColorArgb] ?: 0xFFFFFFFF,
             subtitleDelayMs = p[Keys.subtitleDelayMs] ?: 0L,
             subtitleBottomPadding = p[Keys.subtitleBottomPadding] ?: 48,
-            themeMode = p[Keys.themeMode] ?: "dark"
+            themeMode = p[Keys.themeMode] ?: "dark",
+            jumpHintEnabled = p[Keys.jumpHintEnabled] ?: true
         )
     }
 
@@ -201,6 +205,10 @@ class SettingsStore @Inject constructor(
 
     suspend fun setSubtitleDelay(value: Long) {
         context.dataStore.edit { it[Keys.subtitleDelayMs] = value.coerceIn(-60_000L, 60_000L) }
+    }
+
+    suspend fun setJumpHintEnabled(value: Boolean) {
+        context.dataStore.edit { it[Keys.jumpHintEnabled] = value }
     }
 
     suspend fun setThemeMode(value: String) {

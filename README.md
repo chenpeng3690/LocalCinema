@@ -5,7 +5,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.2.1（versionCode 3）
+- 当前版本：0.2.2（versionCode 4）
 
 ---
 
@@ -101,7 +101,8 @@ gradle wrapper --gradle-version 8.9
 - 位置按**屏幕比例**存储，换设备不会跑出屏幕
 - **常驻显示**：开启后控件自动隐藏时按钮仍保留；锁定态一律隐藏
 - 设置页带实时预览 + 九宫格预设 + 水平/垂直滑块
-- 设置根列表每行带开关，可随手关闭遮挡画面的按钮
+- 设置根列表每行显示「秒数 · 是否常驻」，点进二级页调整；启用开关只在二级页（避免两处开关重复）
+- **显示跳转提示**：快退/快进后在屏幕中央弹出的秒数提示可关闭，关闭后不再遮挡画面
 
 ### 上次状态恢复
 - 进入专辑记录 `lastAlbumId`，开始播放记录 `lastVideoId`

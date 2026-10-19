@@ -98,6 +98,10 @@ class PlayerViewModel @Inject constructor(
     private val _boosting = MutableStateFlow(false)
     val boosting: StateFlow<Boolean> = _boosting.asStateFlow()
 
+    /** 快退/快进后是否弹居中提示（关闭后不遮挡画面） */
+    private val _jumpHintEnabled = MutableStateFlow(true)
+    val jumpHintEnabled: StateFlow<Boolean> = _jumpHintEnabled.asStateFlow()
+
     /** 长按画面临时加速的目标倍速 */
     private val _boostSpeedPercent = MutableStateFlow(200)
     val boostSpeedPercent: StateFlow<Int> = _boostSpeedPercent.asStateFlow()
@@ -217,6 +221,7 @@ class PlayerViewModel @Inject constructor(
             _playlistMode.value = s.playlistMode
             nextCountdownEnabled = s.nextCountdown
             _boostSpeedPercent.value = s.longPressSpeedPercent
+            _jumpHintEnabled.value = s.jumpHintEnabled
         }
 
         connection.connect()
@@ -243,6 +248,7 @@ class PlayerViewModel @Inject constructor(
                 _playlistMode.value = settings.playlistMode
                 nextCountdownEnabled = settings.nextCountdown
                 _boostSpeedPercent.value = settings.longPressSpeedPercent
+                _jumpHintEnabled.value = settings.jumpHintEnabled
                 // 字幕样式可能在另一个入口被改过，同步但不覆盖当前开关以外的状态
                 val prefs = _subtitlePrefs.value
                 _subtitlePrefs.value = prefs.copy(

@@ -119,6 +119,7 @@ fun PlayerScreen(
     val boosting by viewModel.boosting.collectAsStateWithLifecycle()
     val sleepRemaining by viewModel.sleepRemainingSec.collectAsStateWithLifecycle()
     val boostSpeed by viewModel.boostSpeedPercent.collectAsStateWithLifecycle()
+    val jumpHintEnabled by viewModel.jumpHintEnabled.collectAsStateWithLifecycle()
     val manualSubtitle by viewModel.externalSubtitleManual.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -186,6 +187,10 @@ fun PlayerScreen(
         maxVolume = maxVolume,
         activity = activity,
         onTap = { controlsVisible = !controlsVisible },
+        onDoubleTap = { left ->
+            viewModel.seekBy(if (left) -10_000 else 30_000)
+            if (jumpHintEnabled) overlay = if (left) "快退 10s" else "快进 30s"
+        },
         onOverlay = { overlay = it },
         onSeekPreview = { seekPreview = it }
     )
@@ -264,7 +269,7 @@ fun PlayerScreen(
                         containerHeight = containerHeight,
                         onTrigger = {
                             viewModel.seekBy(-jumpLeft.seconds * 1000L)
-                            overlay = "快退 ${jumpLeft.seconds}s"
+                            if (jumpHintEnabled) overlay = "快退 ${jumpLeft.seconds}s"
                         }
                     )
                 }
@@ -276,7 +281,7 @@ fun PlayerScreen(
                         containerHeight = containerHeight,
                         onTrigger = {
                             viewModel.seekBy(jumpRight.seconds * 1000L)
-                            overlay = "快进 ${jumpRight.seconds}s"
+                            if (jumpHintEnabled) overlay = "快进 ${jumpRight.seconds}s"
                         }
                     )
                 }
@@ -455,6 +460,7 @@ private fun rememberVideoGestureModifier(
     maxVolume: Int,
     activity: Activity?,
     onTap: () -> Unit,
+    onDoubleTap: (Boolean) -> Unit,
     onOverlay: (String?) -> Unit,
     onSeekPreview: (Long?) -> Unit
 ): Modifier {
@@ -565,9 +571,7 @@ private fun rememberVideoGestureModifier(
                     if (downTime - lastTapTime < DOUBLE_TAP_MS) {
                         pendingTap?.cancel()
                         lastTapTime = 0L
-                        val left = startX < size.width / 2f
-                        viewModel.seekBy(if (left) -10_000 else 30_000)
-                        onOverlay(if (left) "快退 10s" else "快进 30s")
+                        onDoubleTap(startX < size.width / 2f)
                     } else {
                         lastTapTime = downTime
                         pendingTap = scope.launch {
