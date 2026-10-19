@@ -1,5 +1,6 @@
 package com.localcinema.app.data.db
 
+import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -97,4 +98,23 @@ data class PlaybackStateEntity(
     val finished: Boolean = false,
     val playCount: Int = 0,
     val updatedAt: Long
+)
+
+/**
+ * 播放记录 + 视频信息 + 专辑名。
+ * 首页「继续观看」与「最近」共用这一个投影，避免写两套 join。
+ */
+data class RecentRow(
+    @Embedded val video: VideoEntity,
+    val statePositionMs: Long,
+    val stateDurationMs: Long,
+    val stateUpdatedAt: Long,
+    val stateFinished: Boolean,
+    val albumName: String?
+)
+
+/** 按专辑统计视频数，用于文件夹页一次查出全部计数 */
+data class AlbumVideoCount(
+    val albumId: String,
+    val count: Int
 )

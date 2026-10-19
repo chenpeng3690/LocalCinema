@@ -96,4 +96,7 @@ class PlaybackRepository @Inject constructor(
     }
 
     suspend fun clear(videoId: String) = playbackDao.delete(videoId)
+
+    /** 清空「最近播放」：只清进度，不动专辑与视频记录 */
+    suspend fun clearAll() = playbackDao.clearAll()
 }

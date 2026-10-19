@@ -5,7 +5,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 包名：`com.localcinema.app`
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.2.2（versionCode 4）
+- 当前版本：0.3.0（versionCode 5）
 
 ---
 
@@ -66,6 +66,26 @@ gradle wrapper --gradle-version 8.9
 - **失效文件**：扫描发现文件已不在时标 `missing`，专辑页顶部提示，可一键清理记录
 - **单集操作**：长按列表项 → 播放 / 标记已看完 / 清除观看进度 / 从专辑移除
 - **批量操作**：顶栏「☑」进多选 → 勾选多项 → 标记已看 / 清进度 / 移除记录；支持全选（只作用于当前搜索结果）
+
+### 首页「继续观看」
+- 冷启动后**一次点击回到上次的剧**，不用先进专辑再翻集
+- 数据来自 `playback_state` join `videos`，只看未看完、有进度、文件还在的记录
+- **同一专辑只留最近 1 条**：横滑里最多 6 部不同的剧，而不是同一部剧占满整条
+- 卡片显示缩略图、进度条、「已看 12:30 / 45:20 · 专辑名」
+- 长按可「继续播放 / 打开所在专辑 / 从继续观看移除」
+- 首页统计改为「N 个专辑 · M 个视频 · K 个未看完」
+
+### 文件夹 Tab（已授权目录管理）
+- 列出**系统里所有持久授权的目录**（`contentResolver.persistedUriPermissions`），不只是建过专辑的
+- 三类状态一眼区分：正常（N 个视频）/ 未添加到专辑（点击即添加并扫描）/ 授权失效（橙字提示）
+- 目录菜单：重新扫描、删除专辑
+- 顶部「添加目录」直接授权新目录并扫描
+
+### 最近播放 Tab
+- 全部播放记录（含已看完），按「今天 / 昨天 / 本周 / 更早」分组
+- 每项显示缩略图、进度、专辑名、相对时间（刚刚 / 12 分钟前 / 昨天 / 3 天前）
+- 与首页「继续观看」的分工：这里是完整历史，那里是未看完的快捷入口
+- 顶部「清空」二次确认，只清进度，不动视频与专辑
 
 ### 搜索
 - **全局搜索**：首页搜索框实时匹配专辑名与视频名，结果分组，点视频直接起播
@@ -156,7 +176,9 @@ app/src/main/java/com/localcinema/app/
 │   └── repo/                    LibraryRepository / PlaybackRepository
 ├── ui/
 │   ├── nav/AppRoot.kt           四 Tab + 路由 + 冷启动直达
-│   ├── home/                    首页：搜索、专辑网格、扫描进度
+│   ├── home/                    首页：搜索、继续观看、专辑网格、扫描进度
+│   ├── folder/                  文件夹：已授权目录管理
+│   ├── recent/                  最近播放：历史记录与时间分组
 │   ├── album/                   专辑详情：Hero、排序、搜索、失效提示、单集菜单
 │   ├── player/                  播放页、ViewModel、面板（倍速/字幕/音轨/更多）
 │   ├── settings/                设置根页、按钮配置页
@@ -217,7 +239,12 @@ Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长�
 现在拆成 `Palette` 数据类 + `DarkPalette/LightPalette` + `staticCompositionLocalOf`，`PlayerColors.Xxx` 改成 `@Composable @ReadOnlyComposable get()`。
 副作用：这些 token 只能在 `@Composable` 上下文读取，普通函数里用（例如原来的 `DarkColors` 顶层 val）会编译失败。
 
-**10. 沙箱到 GitHub 的链路不稳**
+**10. `persistedUriPermissions` 才是"我授权过哪些目录"的真相**
+
+`albums` 表只记录建过专辑的目录。用户通过 SAF 授权过、但没建成专辑的目录，没有任何地方记录，所以在 App 里完全不可见。
+`contentResolver.persistedUriPermissions` 能读到系统保存的全部持久授权，把它和 `albums` 做差集就是"未添加到专辑的目录"。文件夹页的核心逻辑就是这个差集。
+
+**11. 沙箱到 GitHub 的链路不稳**
 
 `api.github.com` 稳定，但 `github.com:443`（git 传输）会间歇性 TLS 中断。已把 git 切到 HTTP/1.1 + 短超时重试，成功率从 1/5 提升到约 4/6。推送失败属网络问题，重试即可。
 

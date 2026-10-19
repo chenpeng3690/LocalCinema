@@ -50,8 +50,9 @@ import com.localcinema.app.R
 import com.localcinema.app.data.db.AlbumDao
 import com.localcinema.app.data.prefs.SettingsStore
 import com.localcinema.app.ui.album.AlbumDetailScreen
-import com.localcinema.app.ui.common.PlaceholderScreen
+import com.localcinema.app.ui.folder.FolderScreen
 import com.localcinema.app.ui.home.HomeScreen
+import com.localcinema.app.ui.recent.RecentScreen
 import com.localcinema.app.ui.settings.JumpButtonSettingsScreen
 import com.localcinema.app.ui.settings.SettingsScreen
 import com.localcinema.app.ui.theme.Dimens
@@ -91,21 +92,23 @@ fun AppRoot() {
         }
     }
 
+    val navigateTab: (String) -> Unit = { route ->
+        navController.navigate(route) {
+            popUpTo(navController.graph.findStartDestination().id) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     Scaffold(
         containerColor = PlayerColors.Bg,
         bottomBar = {
             if (showBottomBar) {
                 AppBottomBar(
                     currentRoute = currentRoute,
-                    onTabClick = { tab ->
-                        navController.navigate(tab.route) {
-                            popUpTo(navController.graph.findStartDestination().id) {
-                                saveState = true
-                            }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
+                    onTabClick = { tab -> navigateTab(tab.route) }
                 )
             }
         }
@@ -117,11 +120,12 @@ fun AppRoot() {
         ) {
             composable(AppTab.Library.route) {
                 HomeScreen(
-                    onOpenAlbum = { albumId -> navController.navigate("album/$albumId") }
+                    onOpenAlbum = { albumId -> navController.navigate("album/$albumId") },
+                    onOpenRecent = { navigateTab(AppTab.Recent.route) }
                 )
             }
-            composable(AppTab.Folder.route) { PlaceholderScreen(title = "文件夹") }
-            composable(AppTab.Recent.route) { PlaceholderScreen(title = "最近") }
+            composable(AppTab.Folder.route) { FolderScreen() }
+            composable(AppTab.Recent.route) { RecentScreen() }
             composable(AppTab.Settings.route) {
                 SettingsScreen(
                     onOpenJumpSettings = { side -> navController.navigate("jump/$side") }

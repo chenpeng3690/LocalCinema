@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DriveFileRenameOutline
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
@@ -79,10 +81,14 @@ import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
 import com.localcinema.app.data.db.AlbumDao
 import com.localcinema.app.data.db.AlbumEntity
+import com.localcinema.app.data.db.PlaybackStateDao
+import com.localcinema.app.data.db.RecentRow
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
 import com.localcinema.app.data.repo.LibraryRepository
+import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.repo.ScanState
+import com.localcinema.app.data.thumb.ThumbCache
 import com.localcinema.app.data.scanner.formatDuration
 import com.localcinema.app.ui.player.PlayerActivity
 import com.localcinema.app.ui.theme.Dimens
@@ -99,6 +105,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
@@ -117,6 +124,9 @@ data class SearchResult(
 class HomeViewModel @Inject constructor(
     private val albumDao: AlbumDao,
     private val videoDao: VideoDao,
+    private val playbackDao: PlaybackStateDao,
+    private val playbackRepository: PlaybackRepository,
+    private val thumbs: ThumbCache,
     private val repository: LibraryRepository,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
@@ -125,6 +135,31 @@ class HomeViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val scanState: StateFlow<ScanState> = repository.scanState
+
+    val videoCount: StateFlow<Int> = videoDao.observeVideoCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    val unfinishedCount: StateFlow<Int> = playbackDao.observeUnfinishedCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    /**
+     * 继续观看：按专辑去重，同一部剧只留最近一次。
+     * 多取 30 条再过滤，是为了保证去重后还能凑够 6 条。
+     */
+    val continueRows: StateFlow<List<RecentRow>> = playbackDao.observeContinueRows()
+        .map { rows ->
+            val seen = mutableSetOf<String>()
+            rows.filter { seen.add(it.video.albumId) }.take(6)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val thumbPaths: StateFlow<Map<String, String>> = thumbs.paths
+
+    fun ensureThumb(video: VideoEntity) = thumbs.ensure(video, viewModelScope)
+
+    fun clearRecentProgress(row: RecentRow) {
+        viewModelScope.launch { playbackRepository.clear(row.video.id) }
+    }
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -180,17 +215,23 @@ class HomeViewModel @Inject constructor(
 @Composable
 fun HomeScreen(
     onOpenAlbum: (String) -> Unit,
+    onOpenRecent: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val scanState by viewModel.scanState.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
+    val videoCount by viewModel.videoCount.collectAsStateWithLifecycle()
+    val unfinishedCount by viewModel.unfinishedCount.collectAsStateWithLifecycle()
+    val continueRows by viewModel.continueRows.collectAsStateWithLifecycle()
+    val thumbPaths by viewModel.thumbPaths.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     var menuAlbum by remember { mutableStateOf<AlbumEntity?>(null) }
     var renameTarget by remember { mutableStateOf<AlbumEntity?>(null) }
     var deleteTarget by remember { mutableStateOf<AlbumEntity?>(null) }
+    var recentMenu by remember { mutableStateOf<RecentRow?>(null) }
     val sheetState = rememberModalBottomSheetState()
 
     val picker = rememberLauncherForActivityResult(
@@ -212,6 +253,8 @@ fun HomeScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             HomeHeader(
                 albumCount = albums.size,
+                videoCount = videoCount,
+                unfinishedCount = unfinishedCount,
                 query = query,
                 onQueryChange = viewModel::setQuery
             )
@@ -245,12 +288,44 @@ fun HomeScreen(
                     }
                 )
 
-                else -> AlbumGrid(
-                    albums = albums,
-                    modifier = Modifier.weight(1f),
-                    onOpenAlbum = onOpenAlbum,
-                    onLongPress = { menuAlbum = it }
-                )
+                else -> {
+                    if (continueRows.isNotEmpty()) {
+                        ContinueWatching(
+                            rows = continueRows,
+                            thumbPaths = thumbPaths,
+                            onEnsureThumb = viewModel::ensureThumb,
+                            onOpen = { row ->
+                                context.startActivity(
+                                    PlayerActivity.intent(
+                                        context = context,
+                                        albumId = row.video.albumId,
+                                        videoId = row.video.id
+                                    )
+                                )
+                            },
+                            onLongPress = { recentMenu = it },
+                            onSeeAll = onOpenRecent
+                        )
+                    }
+
+                    Text(
+                        text = "我的专辑",
+                        style = PlayerType.SectionTitle,
+                        color = PlayerColors.TextPrimary,
+                        modifier = Modifier.padding(
+                            start = Dimens.pagePadding,
+                            top = 18.dp,
+                            bottom = 2.dp
+                        )
+                    )
+
+                    AlbumGrid(
+                        albums = albums,
+                        modifier = Modifier.weight(1f),
+                        onOpenAlbum = onOpenAlbum,
+                        onLongPress = { menuAlbum = it }
+                    )
+                }
             }
         }
 
@@ -332,6 +407,66 @@ fun HomeScreen(
                     onClick = {
                         menuAlbum = null
                         deleteTarget = album
+                    }
+                )
+            }
+        }
+    }
+
+    // ---------- 继续观看卡片操作 ----------
+    recentMenu?.let { row ->
+        ModalBottomSheet(
+            onDismissRequest = { recentMenu = null },
+            sheetState = sheetState,
+            containerColor = PlayerColors.SurfaceElevated,
+            contentColor = PlayerColors.TextPrimary
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(bottom = 12.dp)
+            ) {
+                Text(
+                    text = row.video.displayName,
+                    style = PlayerType.TopBarTitle,
+                    color = PlayerColors.TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp)
+                )
+                Spacer(Modifier.height(6.dp))
+                SheetAction(
+                    icon = Icons.Rounded.PlayArrow,
+                    label = "继续播放",
+                    onClick = {
+                        val target = row
+                        recentMenu = null
+                        context.startActivity(
+                            PlayerActivity.intent(
+                                context = context,
+                                albumId = target.video.albumId,
+                                videoId = target.video.id
+                            )
+                        )
+                    }
+                )
+                SheetAction(
+                    icon = Icons.Rounded.FolderOpen,
+                    label = "打开所在专辑",
+                    onClick = {
+                        val albumId = row.video.albumId
+                        recentMenu = null
+                        onOpenAlbum(albumId)
+                    }
+                )
+                SheetAction(
+                    icon = Icons.Rounded.DeleteOutline,
+                    label = "从继续观看移除",
+                    danger = true,
+                    onClick = {
+                        viewModel.clearRecentProgress(row)
+                        recentMenu = null
                     }
                 )
             }
@@ -436,6 +571,8 @@ private fun SheetAction(
 @Composable
 private fun HomeHeader(
     albumCount: Int,
+    videoCount: Int,
+    unfinishedCount: Int,
     query: String,
     onQueryChange: (String) -> Unit
 ) {
@@ -447,7 +584,14 @@ private fun HomeHeader(
             modifier = Modifier.padding(top = 4.dp)
         )
         Text(
-            text = if (albumCount == 0) "还没有内容" else "$albumCount 个专辑",
+            text = if (albumCount == 0) {
+                "还没有内容"
+            } else {
+                buildString {
+                    append("$albumCount 个专辑 · $videoCount 个视频")
+                    if (unfinishedCount > 0) append(" · $unfinishedCount 个未看完")
+                }
+            },
             style = PlayerType.Caption,
             color = PlayerColors.TextSecondary,
             modifier = Modifier.padding(top = 6.dp)
@@ -913,4 +1057,153 @@ private fun coverBrush(seed: String): Brush {
     val palettes = PlayerColors.CoverPalettes
     val idx = seed.hashCode().absoluteValue % palettes.size
     return Brush.linearGradient(palettes[idx])
+}
+
+// ---------------------------------------------------------------------------
+// 继续观看
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun ContinueWatching(
+    rows: List<RecentRow>,
+    thumbPaths: Map<String, String>,
+    onEnsureThumb: (VideoEntity) -> Unit,
+    onOpen: (RecentRow) -> Unit,
+    onLongPress: (RecentRow) -> Unit,
+    onSeeAll: () -> Unit
+) {
+    Column(modifier = Modifier.padding(top = 16.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.pagePadding),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "继续观看",
+                style = PlayerType.SectionTitle,
+                color = PlayerColors.TextPrimary,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "查看全部 ›",
+                fontSize = 10.5.sp,
+                color = PlayerColors.TextSecondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onSeeAll)
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+
+        LazyRow(
+            contentPadding = PaddingValues(
+                start = Dimens.pagePadding,
+                end = Dimens.pagePadding,
+                top = 10.dp
+            ),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(rows, key = { it.video.id }) { row ->
+                LaunchedEffect(row.video.id) { onEnsureThumb(row.video) }
+                ContinueCard(
+                    row = row,
+                    thumbPath = thumbPaths[row.video.id],
+                    onOpen = { onOpen(row) },
+                    onLongPress = { onLongPress(row) }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ContinueCard(
+    row: RecentRow,
+    thumbPath: String?,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit
+) {
+    val video = row.video
+    val duration = if (row.stateDurationMs > 0) row.stateDurationMs else video.durationMs
+    val progress = if (duration > 0) {
+        (row.statePositionMs.toFloat() / duration).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+
+    Column(
+        modifier = Modifier
+            .width(208.dp)
+            .clip(RoundedCornerShape(Dimens.radiusCard))
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(117.dp)
+                .clip(RoundedCornerShape(Dimens.radiusCard))
+                .background(coverBrush(video.displayName))
+        ) {
+            if (thumbPath != null) {
+                AsyncImage(
+                    model = File(thumbPath),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize()
+                )
+            }
+
+            Text(
+                text = "▶ 继续",
+                fontSize = 8.5.sp,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(7.dp)
+                    .background(PlayerColors.Accent, RoundedCornerShape(Dimens.radiusBadge))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+
+            // 进度条贴底：duration 为 0 时不画，避免除零后画出满格
+            if (progress > 0f) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(Dimens.progressHeight)
+                        .background(PlayerColors.PlayerTrackInactive)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress)
+                            .height(Dimens.progressHeight)
+                            .background(PlayerColors.Accent)
+                    )
+                }
+            }
+        }
+
+        Text(
+            text = video.displayName,
+            style = PlayerType.CardTitle,
+            color = PlayerColors.TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+        Text(
+            text = buildString {
+                append("已看 ${formatDuration(row.statePositionMs)}")
+                if (duration > 0) append(" / ${formatDuration(duration)}")
+                row.albumName?.let { append(" · $it") }
+            },
+            style = PlayerType.Caption,
+            color = PlayerColors.TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 3.dp)
+        )
+    }
 }

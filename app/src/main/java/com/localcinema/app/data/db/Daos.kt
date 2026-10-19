@@ -84,10 +84,62 @@ interface VideoDao {
 
     @Query("SELECT COUNT(*) FROM videos WHERE albumId = :albumId AND missing = 0")
     suspend fun countByAlbum(albumId: String): Int
+
+    @Query("SELECT COUNT(*) FROM videos WHERE missing = 0")
+    fun observeVideoCount(): Flow<Int>
+
+    /** 一次查出所有专辑的视频数，避免文件夹页 N 次查询 */
+    @Query("SELECT albumId, COUNT(*) AS count FROM videos WHERE missing = 0 GROUP BY albumId")
+    suspend fun countGrouped(): List<AlbumVideoCount>
 }
 
 @Dao
 interface PlaybackStateDao {
+
+    /**
+     * 继续观看：只看未看完、有进度、文件还在的记录。
+     * 多取一些（30 条），在内存里按专辑去重后再截断。
+     */
+    @Query(
+        """
+        SELECT v.*, s.positionMs AS statePositionMs, s.durationMs AS stateDurationMs,
+               s.updatedAt AS stateUpdatedAt, s.finished AS stateFinished,
+               a.name AS albumName
+        FROM playback_state s
+        JOIN videos v ON v.id = s.videoId
+        LEFT JOIN albums a ON a.id = v.albumId
+        WHERE s.finished = 0 AND s.positionMs > 0 AND v.missing = 0
+        ORDER BY s.updatedAt DESC
+        LIMIT :limit
+        """
+    )
+    fun observeContinueRows(limit: Int = 30): Flow<List<RecentRow>>
+
+    /** 首页统计里的「N 个未看完」 */
+    @Query(
+        """
+        SELECT COUNT(*) FROM playback_state s
+        JOIN videos v ON v.id = s.videoId
+        WHERE s.finished = 0 AND s.positionMs > 0 AND v.missing = 0
+        """
+    )
+    fun observeUnfinishedCount(): Flow<Int>
+
+    /** 全部播放记录（含已看完），用于「最近」页 */
+    @Query(
+        """
+        SELECT v.*, s.positionMs AS statePositionMs, s.durationMs AS stateDurationMs,
+               s.updatedAt AS stateUpdatedAt, s.finished AS stateFinished,
+               a.name AS albumName
+        FROM playback_state s
+        JOIN videos v ON v.id = s.videoId
+        LEFT JOIN albums a ON a.id = v.albumId
+        WHERE s.positionMs > 0 AND v.missing = 0
+        ORDER BY s.updatedAt DESC
+        LIMIT :limit
+        """
+    )
+    fun observeHistory(limit: Int = 200): Flow<List<RecentRow>>
 
     @Query("SELECT * FROM playback_state WHERE videoId = :videoId LIMIT 1")
     suspend fun get(videoId: String): PlaybackStateEntity?
