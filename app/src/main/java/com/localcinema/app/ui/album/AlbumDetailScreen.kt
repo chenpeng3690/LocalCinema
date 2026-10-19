@@ -2,6 +2,7 @@ package com.localcinema.app.ui.album
 
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -48,6 +50,7 @@ import com.localcinema.app.data.db.AlbumDao
 import com.localcinema.app.data.db.AlbumEntity
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
+import com.localcinema.app.data.prefs.SettingsStore
 import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.scanner.NaturalOrder
 import com.localcinema.app.data.scanner.formatDuration
@@ -66,6 +69,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
@@ -80,14 +84,28 @@ data class VideoRowUi(
 
 @HiltViewModel
 class AlbumDetailViewModel @Inject constructor(
-    albumDao: AlbumDao,
+    private val albumDao: AlbumDao,
     videoDao: VideoDao,
     private val thumbs: ThumbnailStore,
     playbackRepository: PlaybackRepository,
+    settingsStore: SettingsStore,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
     private val albumId: String = checkNotNull(savedStateHandle.get<String>("albumId"))
+
+    /** 上次播放的视频，用于列表高亮 */
+    val lastVideoId: StateFlow<String?> = settingsStore.settings
+        .map { it.lastVideoId }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    init {
+        // 进入专辑即记录，供下次冷启动直达
+        viewModelScope.launch {
+            albumDao.touch(albumId, System.currentTimeMillis())
+            settingsStore.setLastAlbum(albumId)
+        }
+    }
 
     fun albumIdValue(): String = albumId
 
@@ -152,12 +170,25 @@ fun AlbumDetailScreen(
     val album by viewModel.album.collectAsStateWithLifecycle()
     val rows by viewModel.rows.collectAsStateWithLifecycle()
     val thumbs by viewModel.thumbPaths.collectAsStateWithLifecycle()
+    val lastVideoId by viewModel.lastVideoId.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val listState = rememberLazyListState()
+
+    // 进入专辑后滚动到上次播放的那一集（前面有 Hero 与分组标题两个 item）
+    LaunchedEffect(rows.size, lastVideoId) {
+        val target = lastVideoId ?: return@LaunchedEffect
+        val index = rows.indexOfFirst { it.video.id == target }
+        if (index >= 0) {
+            delay(250)
+            listState.animateScrollToItem(index + 2)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopBar(title = album?.name ?: "", onBack = onBack)
 
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 32.dp)
         ) {
@@ -217,6 +248,7 @@ fun AlbumDetailScreen(
                     VideoRow(
                         ui = row,
                         thumbPath = thumbs[row.video.id],
+                        isLastPlayed = row.video.id == lastVideoId,
                         onClick = {
                             context.startActivity(
                                 PlayerActivity.intent(
@@ -340,14 +372,27 @@ private fun AlbumHero(album: AlbumEntity?, videoCount: Int) {
 private fun VideoRow(
     ui: VideoRowUi,
     thumbPath: String?,
+    isLastPlayed: Boolean,
     onClick: () -> Unit
 ) {
     val video = ui.video
+    val highlightShape = RoundedCornerShape(11.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = Dimens.pagePadding, vertical = 9.dp),
+            .padding(horizontal = Dimens.pagePadding, vertical = 9.dp)
+            .then(
+                if (isLastPlayed) {
+                    Modifier
+                        .clip(highlightShape)
+                        .background(PlayerColors.AccentSoft)
+                        .border(1.5.dp, PlayerColors.Accent, highlightShape)
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                } else {
+                    Modifier
+                }
+            )
+            .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -408,13 +453,27 @@ private fun VideoRow(
                 .weight(1f)
                 .padding(start = 11.dp)
         ) {
-            Text(
-                text = video.displayName,
-                style = PlayerType.ListTitle,
-                color = PlayerColors.TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = video.displayName,
+                    style = PlayerType.ListTitle,
+                    color = PlayerColors.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (isLastPlayed) {
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = "上次播放",
+                        fontSize = 8.5.sp,
+                        color = Color.White,
+                        modifier = Modifier
+                            .background(PlayerColors.Accent, RoundedCornerShape(3.dp))
+                            .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                    )
+                }
+            }
             Row(
                 modifier = Modifier.padding(top = 5.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)

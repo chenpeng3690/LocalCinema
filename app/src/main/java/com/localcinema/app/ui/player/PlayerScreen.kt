@@ -116,6 +116,13 @@ fun PlayerScreen(
     var locked by remember { mutableStateOf(false) }
     var aspectMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var overlay by remember { mutableStateOf<String?>(null) }
+
+    // 按钮 / 双击 / 手势触发的提示统一在这里自动消失，避免残留
+    LaunchedEffect(overlay) {
+        val current = overlay ?: return@LaunchedEffect
+        delay(1_500)
+        if (overlay == current) overlay = null
+    }
     var panel by remember { mutableStateOf(PlayerPanel.None) }
 
     var positionMs by remember { mutableLongStateOf(0L) }

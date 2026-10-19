@@ -226,6 +226,7 @@ class PlayerViewModel @Inject constructor(
             saveNow()
             val startMs = playbackRepository.resumePosition(video)
             playbackRepository.markStarted(video)
+            settingsStore.setLastVideo(albumId, video.id)
 
             _currentVideo.value = video
             externalCues = emptyList()

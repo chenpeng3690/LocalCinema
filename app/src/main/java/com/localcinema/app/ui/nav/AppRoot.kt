@@ -25,14 +25,20 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -41,6 +47,8 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.localcinema.app.R
+import com.localcinema.app.data.db.AlbumDao
+import com.localcinema.app.data.prefs.SettingsStore
 import com.localcinema.app.ui.album.AlbumDetailScreen
 import com.localcinema.app.ui.common.PlaceholderScreen
 import com.localcinema.app.ui.home.HomeScreen
@@ -48,6 +56,9 @@ import com.localcinema.app.ui.settings.JumpButtonSettingsScreen
 import com.localcinema.app.ui.settings.SettingsScreen
 import com.localcinema.app.ui.theme.Dimens
 import com.localcinema.app.ui.theme.PlayerColors
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.first
+import javax.inject.Inject
 
 enum class AppTab(
     val route: String,
@@ -67,6 +78,18 @@ fun AppRoot() {
     val currentRoute = backStackEntry?.destination?.route
     val tabRoutes = AppTab.entries.map { it.route }.toSet()
     val showBottomBar = currentRoute in tabRoutes
+
+    // 冷启动直达上次专辑（只在第一次进入 Library 时执行一次）
+    val startupViewModel: StartupViewModel = hiltViewModel()
+    var startupHandled by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (startupHandled) return@LaunchedEffect
+        startupHandled = true
+        val albumId = startupViewModel.resolveLastAlbum()
+        if (albumId != null) {
+            navController.navigate("album/$albumId")
+        }
+    }
 
     Scaffold(
         containerColor = PlayerColors.Bg,
@@ -189,5 +212,23 @@ private fun AppTabItem(
                 fontSize = 9.5.sp
             )
         }
+    }
+}
+
+@HiltViewModel
+class StartupViewModel @Inject constructor(
+    private val albumDao: AlbumDao,
+    private val settingsStore: SettingsStore
+) : ViewModel() {
+
+    /**
+     * 返回可直达的专辑 id：
+     * 开关关闭、没有记录、或专辑已被删除时都返回 null，落回首页。
+     */
+    suspend fun resolveLastAlbum(): String? {
+        val settings = settingsStore.settings.first()
+        if (!settings.startIntoLastAlbum) return null
+        val albumId = settings.lastAlbumId ?: return null
+        return if (albumDao.getById(albumId) != null) albumId else null
     }
 }
