@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -64,6 +65,22 @@ class SettingsViewModel @Inject constructor(
     fun setKeepScreenOn(value: Boolean) {
         viewModelScope.launch { store.setKeepScreenOn(value) }
     }
+
+    fun setBackgroundPlay(value: Boolean) {
+        viewModelScope.launch { store.setBackgroundPlay(value) }
+    }
+
+    /** 直接在列表页开关悬浮按钮，不用进二级页 */
+    fun setJumpEnabled(isLeft: Boolean, enabled: Boolean) {
+        viewModelScope.launch {
+            val current = settings.value
+            if (isLeft) {
+                store.setJumpLeft(current.jumpLeft.copy(enabled = enabled))
+            } else {
+                store.setJumpRight(current.jumpRight.copy(enabled = enabled))
+            }
+        }
+    }
 }
 
 @Composable
@@ -101,6 +118,13 @@ fun SettingsScreen(
                 onCheckedChange = viewModel::setKeepScreenOn
             )
             SettingDivider()
+            SettingSwitchRow(
+                title = "后台播放",
+                subtitle = "退到后台或锁屏后继续播放",
+                checked = settings.backgroundPlay,
+                onCheckedChange = viewModel::setBackgroundPlay
+            )
+            SettingDivider()
             SettingValueRow(
                 title = "硬件解码",
                 value = "自动",
@@ -115,16 +139,24 @@ fun SettingsScreen(
         }
 
         SettingGroup(title = "播放控制") {
-            SettingValueRow(
+            SettingSwitchNavRow(
                 title = "快退按钮",
-                value = with(settings.jumpLeft) { "${seconds}s · ${if (constantVisible) "常驻" else "非常驻"}" },
-                onClick = { onOpenJumpSettings("left") }
+                subtitle = with(settings.jumpLeft) {
+                    "${seconds}s · ${if (constantVisible) "常驻" else "非常驻"}"
+                },
+                checked = settings.jumpLeft.enabled,
+                onCheckedChange = { viewModel.setJumpEnabled(isLeft = true, enabled = it) },
+                onOpenDetail = { onOpenJumpSettings("left") }
             )
             SettingDivider()
-            SettingValueRow(
+            SettingSwitchNavRow(
                 title = "快进按钮",
-                value = with(settings.jumpRight) { "${seconds}s · ${if (constantVisible) "常驻" else "非常驻"}" },
-                onClick = { onOpenJumpSettings("right") }
+                subtitle = with(settings.jumpRight) {
+                    "${seconds}s · ${if (constantVisible) "常驻" else "非常驻"}"
+                },
+                checked = settings.jumpRight.enabled,
+                onCheckedChange = { viewModel.setJumpEnabled(isLeft = false, enabled = it) },
+                onOpenDetail = { onOpenJumpSettings("right") }
             )
         }
 
@@ -247,6 +279,50 @@ private fun SettingValueRow(
             Spacer(Modifier.width(6.dp))
             Text(text = "›", fontSize = 14.sp, color = PlayerColors.Chevron)
         }
+    }
+}
+
+@Composable
+private fun SettingSwitchNavRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    onOpenDetail: () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(58.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    onClick = onOpenDetail
+                )
+                .padding(start = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, fontSize = 12.sp, color = PlayerColors.TextPrimary)
+                Text(
+                    text = if (checked) subtitle else "已关闭",
+                    fontSize = 9.5.sp,
+                    color = PlayerColors.TextTertiary,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            Text(text = "›", fontSize = 14.sp, color = PlayerColors.Chevron)
+        }
+        Spacer(Modifier.width(10.dp))
+        PlayerSwitch(checked = checked, onCheckedChange = onCheckedChange)
+        Spacer(Modifier.width(14.dp))
     }
 }
 

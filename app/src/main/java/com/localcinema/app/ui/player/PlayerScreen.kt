@@ -89,6 +89,7 @@ fun PlayerScreen(
     viewModel: PlayerViewModel,
     onBack: () -> Unit
 ) {
+    val player by viewModel.player.collectAsStateWithLifecycle()
     val current by viewModel.currentVideo.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val resumeHint by viewModel.resumeHint.collectAsStateWithLifecycle()
@@ -173,13 +174,15 @@ fun PlayerScreen(
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
-                    player = viewModel.player
                     useController = false
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
                 }
             },
-            update = { view -> view.resizeMode = aspectMode },
+            update = { view ->
+                if (view.player !== player) view.player = player
+                view.resizeMode = aspectMode
+            },
             modifier = Modifier.fillMaxSize()
         )
 

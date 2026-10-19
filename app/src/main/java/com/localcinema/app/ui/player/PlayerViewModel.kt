@@ -1,18 +1,16 @@
 package com.localcinema.app.ui.player
 
-import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.text.CueGroup
-import androidx.media3.exoplayer.ExoPlayer
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
 import com.localcinema.app.data.prefs.JumpButtonConfig
@@ -21,8 +19,8 @@ import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.scanner.NaturalOrder
 import com.localcinema.app.data.subtitle.SubtitleRepository
 import com.localcinema.app.data.subtitle.TimedCue
+import com.localcinema.app.playback.PlayerConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -50,26 +48,22 @@ data class SubtitlePrefs(
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
-    @ApplicationContext context: Context,
     videoDao: VideoDao,
     private val playbackRepository: PlaybackRepository,
     private val subtitleRepository: SubtitleRepository,
     private val settingsStore: SettingsStore,
+    private val connection: PlayerConnection,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
     private val albumId: String = savedStateHandle.get<String>(KEY_ALBUM_ID) ?: ""
     private val startVideoId: String = savedStateHandle.get<String>(KEY_VIDEO_ID) ?: ""
 
-    val player: ExoPlayer = ExoPlayer.Builder(context).build().apply {
-        setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(C.USAGE_MEDIA)
-                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                .build(),
-            /* handleAudioFocus = */ true
-        )
-    }
+    /** 播放器由 Service 持有，这里只是控制器；连接完成前为 null */
+    val player: StateFlow<Player?> = connection.player
+
+    private var attachedPlayer: Player? = null
+    private var playbackStarted = false
 
     private val videoFlow = videoDao.observeByAlbum(albumId)
         .map { list -> list.sortedWith(compareBy(NaturalOrder) { it.displayName }) }
@@ -83,19 +77,22 @@ class PlayerViewModel @Inject constructor(
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
-    /** 播放速度，百分数：100 = 1.0x */
+    private val _resumeHint = MutableStateFlow<String?>(null)
+    val resumeHint: StateFlow<String?> = _resumeHint.asStateFlow()
+
+    private val _backgroundPlay = MutableStateFlow(false)
+    val backgroundPlay: StateFlow<Boolean> = _backgroundPlay.asStateFlow()
+
+    // ---------- 倍速 ----------
     private val _speedPercent = MutableStateFlow(100)
     val speedPercent: StateFlow<Int> = _speedPercent.asStateFlow()
 
-    /** 左右悬浮快退/快进按钮配置 */
+    // ---------- 悬浮按钮 ----------
     private val _jumpLeft = MutableStateFlow(JumpButtonConfig.DEFAULT_LEFT)
     val jumpLeft: StateFlow<JumpButtonConfig> = _jumpLeft.asStateFlow()
 
     private val _jumpRight = MutableStateFlow(JumpButtonConfig.DEFAULT_RIGHT)
     val jumpRight: StateFlow<JumpButtonConfig> = _jumpRight.asStateFlow()
-
-    private val _resumeHint = MutableStateFlow<String?>(null)
-    val resumeHint: StateFlow<String?> = _resumeHint.asStateFlow()
 
     // ---------- 字幕 ----------
     private val _subtitlePrefs = MutableStateFlow(SubtitlePrefs())
@@ -104,7 +101,6 @@ class PlayerViewModel @Inject constructor(
     private val _subtitleText = MutableStateFlow("")
     val subtitleText: StateFlow<String> = _subtitleText.asStateFlow()
 
-    /** 外挂字幕（自解析，支持延迟） */
     private var externalCues: List<TimedCue> = emptyList()
     private var externalActive: Boolean = false
 
@@ -112,7 +108,6 @@ class PlayerViewModel @Inject constructor(
 
     private val _textTracks = MutableStateFlow<List<TrackOption>>(emptyList())
 
-    /** 内嵌轨 + 外挂字幕（index = -1）合并后的可选项 */
     val textTracks: StateFlow<List<TrackOption>> = combine(
         _textTracks,
         _externalSubtitleName
@@ -120,7 +115,6 @@ class PlayerViewModel @Inject constructor(
         if (externalName == null) embedded else embedded + TrackOption(EXTERNAL_INDEX, "外挂字幕 · $externalName")
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** null = 关闭；-1 = 外挂；>=0 = 内嵌轨索引 */
     private val _selectedTextIndex = MutableStateFlow<Int?>(null)
     val selectedTextIndex: StateFlow<Int?> = _selectedTextIndex.asStateFlow()
 
@@ -130,85 +124,91 @@ class PlayerViewModel @Inject constructor(
     private val _selectedAudioIndex = MutableStateFlow(0)
     val selectedAudioIndex: StateFlow<Int> = _selectedAudioIndex.asStateFlow()
 
+    private val listener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            _isPlaying.value = isPlaying
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED) {
+                saveNow()
+                playNext(auto = true)
+            }
+        }
+
+        /** 内嵌字幕走这里；外挂字幕自己渲染 */
+        override fun onCues(cueGroup: CueGroup) {
+            if (externalActive) return
+            if (!_subtitlePrefs.value.enabled) {
+                if (_subtitleText.value.isNotEmpty()) _subtitleText.value = ""
+                return
+            }
+            val text = cueGroup.cues.joinToString("\n") { it.text?.toString().orEmpty() }
+            if (text != _subtitleText.value) _subtitleText.value = text
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+            _textTracks.value = textGroups.mapIndexed { index, group ->
+                val format = group.mediaTrackGroup.getFormat(0)
+                TrackOption(index, format.label ?: format.language ?: "字幕 ${index + 1}")
+            }
+            if (!externalActive) {
+                _selectedTextIndex.value =
+                    textGroups.indexOfFirst { it.isSelected }.takeIf { it >= 0 }
+            }
+
+            val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+            _audioTracks.value = audioGroups.mapIndexed { index, group ->
+                val format = group.mediaTrackGroup.getFormat(0)
+                val label = format.label ?: format.language ?: "音轨 ${index + 1}"
+                TrackOption(index, "$label · ${format.channelCount}ch")
+            }
+            _selectedAudioIndex.value =
+                audioGroups.indexOfFirst { it.isSelected }.coerceAtLeast(0)
+        }
+    }
+
     init {
-        player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _isPlaying.value = isPlaying
-            }
+        connection.connect()
 
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    saveNow()
-                    playNext(auto = true)
+        // 连接完成后绑定监听并开始播放
+        viewModelScope.launch {
+            connection.player.collect { p ->
+                if (p != null && p !== attachedPlayer) {
+                    attachedPlayer?.removeListener(listener)
+                    p.addListener(listener)
+                    attachedPlayer = p
+                    startPlaybackIfNeeded(p)
                 }
             }
+        }
 
-            /** 内嵌字幕走这里；外挂字幕自己渲染，不接收 */
-            override fun onCues(cueGroup: CueGroup) {
-                if (externalActive) return
-                if (!_subtitlePrefs.value.enabled) {
-                    if (_subtitleText.value.isNotEmpty()) _subtitleText.value = ""
-                    return
-                }
-                val text = cueGroup.cues
-                    .joinToString("\n") { it.text?.toString().orEmpty() }
-                if (text != _subtitleText.value) _subtitleText.value = text
-            }
-
-            override fun onTracksChanged(tracks: Tracks) {
-                val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-                _textTracks.value = textGroups.mapIndexed { index, group ->
-                    val format = group.mediaTrackGroup.getFormat(0)
-                    TrackOption(index, format.label ?: format.language ?: "字幕 ${index + 1}")
-                }
-                if (!externalActive) {
-                    _selectedTextIndex.value =
-                        textGroups.indexOfFirst { it.isSelected }.takeIf { it >= 0 }
-                }
-
-                val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-                _audioTracks.value = audioGroups.mapIndexed { index, group ->
-                    val format = group.mediaTrackGroup.getFormat(0)
-                    val label = format.label ?: format.language ?: "音轨 ${index + 1}"
-                    TrackOption(index, "$label · ${format.channelCount}ch")
-                }
-                _selectedAudioIndex.value =
-                    audioGroups.indexOfFirst { it.isSelected }.coerceAtLeast(0)
-            }
-        })
-
-        // 设置变化时实时同步（用户可能在播放页改了按钮配置）
         viewModelScope.launch {
             settingsStore.settings.collect { settings ->
                 applySpeed(settings.speedPercent.coerceIn(50, 500), persist = false)
                 _jumpLeft.value = settings.jumpLeft
                 _jumpRight.value = settings.jumpRight
+                _backgroundPlay.value = settings.backgroundPlay
             }
-        }
-
-        viewModelScope.launch {
-            val list = videoFlow.first()
-            if (list.isEmpty()) return@launch
-            val target = list.firstOrNull { it.id == startVideoId } ?: list.first()
-            playVideo(target)
         }
 
         // 每 5 秒落一次进度
         viewModelScope.launch {
             while (true) {
                 delay(5_000)
-                if (player.isPlaying) saveNow()
+                if (attachedPlayer?.isPlaying == true) saveNow()
             }
         }
 
-        // 外挂字幕按「播放位置 + 延迟」筛选，120ms 刷新
+        // 外挂字幕按「播放位置 + 延迟」筛选
         viewModelScope.launch {
             while (true) {
                 val prefs = _subtitlePrefs.value
                 if (!prefs.enabled) {
                     if (_subtitleText.value.isNotEmpty()) _subtitleText.value = ""
                 } else if (externalActive && externalCues.isNotEmpty()) {
-                    val position = player.currentPosition + prefs.delayMs
+                    val position = (attachedPlayer?.currentPosition ?: 0L) + prefs.delayMs
                     val text = externalCues.asSequence()
                         .filter { position >= it.startMs && position <= it.endMs }
                         .joinToString("\n") { it.text }
@@ -219,9 +219,30 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    // ---------- 播放 ----------
+    /**
+     * 首次连接时决定播什么。
+     * 如果 Service 正在放同一个视频（用户从后台切回来），不打断它，只同步 UI。
+     */
+    private fun startPlaybackIfNeeded(p: Player) {
+        if (playbackStarted) return
+        playbackStarted = true
+
+        viewModelScope.launch {
+            val list = videoFlow.first()
+            if (list.isEmpty()) return@launch
+            val target = list.firstOrNull { it.id == startVideoId } ?: list.first()
+
+            val alreadyPlaying = p.mediaItemCount > 0 && p.currentMediaItem?.mediaId == target.id
+            if (alreadyPlaying) {
+                _currentVideo.value = target
+                return@launch
+            }
+            playVideo(target)
+        }
+    }
 
     fun playVideo(video: VideoEntity) {
+        val p = attachedPlayer ?: return
         viewModelScope.launch {
             saveNow()
             val startMs = playbackRepository.resumePosition(video)
@@ -235,22 +256,32 @@ class PlayerViewModel @Inject constructor(
             _selectedTextIndex.value = null
             _subtitleText.value = ""
 
-            player.setMediaItem(MediaItem.fromUri(video.uri))
-            player.prepare()
+            p.setMediaItem(buildMediaItem(video))
+            p.prepare()
             if (startMs > 0L) {
-                player.seekTo(startMs)
+                p.seekTo(startMs)
                 _resumeHint.value = "已跳到 ${formatMs(startMs)}（上次看到这里）"
                 viewModelScope.launch {
                     delay(3_000)
                     _resumeHint.value = null
                 }
             }
-            player.playWhenReady = true
+            p.playWhenReady = true
 
-            // 扫描阶段配对好的同名外挂字幕
             video.subtitleUri?.let { loadSubtitleFile(Uri.parse(it)) }
         }
     }
+
+    private fun buildMediaItem(video: VideoEntity): MediaItem =
+        MediaItem.Builder()
+            .setUri(video.uri)
+            .setMediaId(video.id)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(video.displayName)
+                    .build()
+            )
+            .build()
 
     private suspend fun loadSubtitleFile(uri: Uri) {
         val name = uri.lastPathSegment ?: "subtitle"
@@ -265,23 +296,30 @@ class PlayerViewModel @Inject constructor(
         _selectedTextIndex.value = EXTERNAL_INDEX
         _subtitlePrefs.value = _subtitlePrefs.value.copy(enabled = true)
 
-        // 关闭内嵌字幕轨，避免和外挂字幕重叠显示
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            .build()
+        attachedPlayer?.trackSelectionParameters = attachedPlayer?.trackSelectionParameters
+            ?.buildUpon()
+            ?.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            ?.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            ?.build()
     }
 
-    /** 手动挂载字幕：只解析文件，不重建播放器，不打断播放 */
     fun loadExternalSubtitle(uri: Uri) {
         viewModelScope.launch { loadSubtitleFile(uri) }
     }
 
-    fun togglePlay() {
-        if (player.isPlaying) player.pause() else player.play()
+    /** 界面退到后台：落进度；未开启后台播放则暂停 */
+    fun onActivityPause() {
+        saveNow()
+        if (!_backgroundPlay.value) {
+            attachedPlayer?.pause()
+        }
     }
 
-    /** 每次 ±10（即 0.1x） */
+    fun togglePlay() {
+        val p = attachedPlayer ?: return
+        if (p.isPlaying) p.pause() else p.play()
+    }
+
     fun stepSpeed(delta: Int) = applySpeed(_speedPercent.value + delta)
 
     fun setSpeed(percent: Int) = applySpeed(percent)
@@ -289,20 +327,21 @@ class PlayerViewModel @Inject constructor(
     private fun applySpeed(percent: Int, persist: Boolean = true) {
         val clamped = percent.coerceIn(50, 500)
         _speedPercent.value = clamped
-        // ExoPlayer 默认用 Sonic 做变速不变调，播放速度与音频音高解耦
-        player.setPlaybackSpeed(clamped / 100f)
+        attachedPlayer?.setPlaybackSpeed(clamped / 100f)
         if (persist) {
             viewModelScope.launch { settingsStore.setSpeedPercent(clamped) }
         }
     }
 
     fun seekTo(positionMs: Long) {
+        val p = attachedPlayer ?: return
         val max = durationMs()
-        if (max > 0) player.seekTo(positionMs.coerceIn(0L, max))
+        if (max > 0) p.seekTo(positionMs.coerceIn(0L, max))
     }
 
     fun seekBy(deltaMs: Long) {
-        seekTo(player.currentPosition + deltaMs)
+        val p = attachedPlayer ?: return
+        seekTo(p.currentPosition + deltaMs)
     }
 
     fun playNext(auto: Boolean = false) {
@@ -312,7 +351,7 @@ class PlayerViewModel @Inject constructor(
         if (index >= 0 && index + 1 < list.size) {
             playVideo(list[index + 1])
         } else if (!auto) {
-            player.pause()
+            attachedPlayer?.pause()
         }
     }
 
@@ -324,15 +363,15 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun durationMs(): Long {
-        val d = player.duration
+        val d = attachedPlayer?.duration ?: C.TIME_UNSET
         return if (d > 0 && d != C.TIME_UNSET) d else (_currentVideo.value?.durationMs ?: 0L)
     }
 
-    fun positionMs(): Long = player.currentPosition.coerceAtLeast(0L)
+    fun positionMs(): Long = (attachedPlayer?.currentPosition ?: 0L).coerceAtLeast(0L)
 
     fun saveNow() {
         val video = _currentVideo.value ?: return
-        val position = player.currentPosition
+        val position = attachedPlayer?.currentPosition ?: return
         if (position <= 0L) return
         viewModelScope.launch {
             playbackRepository.save(video, position, durationMs())
@@ -363,9 +402,9 @@ class PlayerViewModel @Inject constructor(
         _subtitlePrefs.value = _subtitlePrefs.value.copy(bottomPaddingDp = dp.coerceIn(8, 160))
     }
 
-    /** index = null 关闭；-1 外挂；>=0 内嵌轨 */
     fun selectTextTrack(index: Int?) {
-        val builder = player.trackSelectionParameters.buildUpon()
+        val p = attachedPlayer ?: return
+        val builder = p.trackSelectionParameters.buildUpon()
 
         when {
             index == null -> {
@@ -384,7 +423,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             else -> {
-                val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
                 if (index !in groups.indices) return
                 externalActive = false
                 builder.clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -393,14 +432,15 @@ class PlayerViewModel @Inject constructor(
                 _selectedTextIndex.value = index
             }
         }
-        player.trackSelectionParameters = builder.build()
+        p.trackSelectionParameters = builder.build()
         _subtitleText.value = ""
     }
 
     fun selectAudioTrack(index: Int) {
-        val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        val p = attachedPlayer ?: return
+        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
         if (index !in groups.indices) return
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
             .setOverrideForType(TrackSelectionOverride(groups[index].mediaTrackGroup, 0))
@@ -410,7 +450,10 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         saveNow()
-        player.release()
+        attachedPlayer?.removeListener(listener)
+        attachedPlayer = null
+        // 只释放控制器，播放器归 Service 所有，退出界面不应停止播放
+        connection.release()
         super.onCleared()
     }
 
