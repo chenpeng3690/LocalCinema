@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.VideoLibrary
@@ -50,7 +49,6 @@ import com.localcinema.app.R
 import com.localcinema.app.data.db.AlbumDao
 import com.localcinema.app.data.prefs.SettingsStore
 import com.localcinema.app.ui.album.AlbumDetailScreen
-import com.localcinema.app.ui.folder.FolderScreen
 import com.localcinema.app.ui.home.HomeScreen
 import com.localcinema.app.ui.recent.RecentScreen
 import com.localcinema.app.ui.settings.JumpButtonSettingsScreen
@@ -67,7 +65,6 @@ enum class AppTab(
     val icon: ImageVector
 ) {
     Library("library", R.string.tab_library, Icons.Rounded.VideoLibrary),
-    Folder("folder", R.string.tab_folder, Icons.Rounded.Folder),
     Recent("recent", R.string.tab_recent, Icons.Rounded.History),
     Settings("settings", R.string.tab_settings, Icons.Rounded.Settings)
 }
@@ -124,7 +121,6 @@ fun AppRoot() {
                     onOpenRecent = { navigateTab(AppTab.Recent.route) }
                 )
             }
-            composable(AppTab.Folder.route) { FolderScreen() }
             composable(AppTab.Recent.route) { RecentScreen() }
             composable(AppTab.Settings.route) {
                 SettingsScreen(

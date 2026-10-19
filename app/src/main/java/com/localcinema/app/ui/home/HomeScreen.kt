@@ -989,9 +989,9 @@ private fun AlbumCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    // 封面自己 clip 就够了；整列加 clip 会把下方文字切出缺角
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(Dimens.radiusCard))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         Box(
@@ -1042,7 +1042,7 @@ private fun AlbumCard(
             color = PlayerColors.TextSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+            modifier = Modifier.padding(top = 4.dp, bottom = 6.dp)
         )
     }
 }
@@ -1133,10 +1133,11 @@ private fun ContinueCard(
         0f
     }
 
+    // 注意：这里不能给整个 Column 加 clip，
+    // 圆角会把下方文字的左下/右下角一起裁掉，看起来像被切了一块
     Column(
         modifier = Modifier
             .width(208.dp)
-            .clip(RoundedCornerShape(Dimens.radiusCard))
             .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
     ) {
         Box(
@@ -1203,7 +1204,7 @@ private fun ContinueCard(
             color = PlayerColors.TextSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 3.dp)
+            modifier = Modifier.padding(top = 3.dp, bottom = 4.dp)
         )
     }
 }
