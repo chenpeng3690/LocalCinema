@@ -73,7 +73,7 @@ import kotlin.math.abs
 
 private enum class GestureMode { None, Undecided, Seek, Brightness, Volume }
 
-private enum class PlayerPanel { None, Subtitle, Audio }
+private enum class PlayerPanel { None, Subtitle, Audio, Speed }
 
 @Composable
 fun PlayerScreen(
@@ -89,6 +89,7 @@ fun PlayerScreen(
     val selectedTextIndex by viewModel.selectedTextIndex.collectAsStateWithLifecycle()
     val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
     val selectedAudioIndex by viewModel.selectedAudioIndex.collectAsStateWithLifecycle()
+    val speedPercent by viewModel.speedPercent.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -263,6 +264,8 @@ fun PlayerScreen(
                 positionMs = seekPreview ?: if (sliderDragging) sliderValue.toLong() else positionMs,
                 durationMs = durationMs,
                 aspectMode = aspectMode,
+                speedPercent = speedPercent,
+                onOpenSpeed = { panel = PlayerPanel.Speed },
                 onBack = onBack,
                 onTogglePlay = viewModel::togglePlay,
                 onSeekBy = viewModel::seekBy,
@@ -406,6 +409,13 @@ fun PlayerScreen(
             onSelect = viewModel::selectAudioTrack
         )
 
+        PlayerPanel.Speed -> SpeedSheet(
+            percent = speedPercent,
+            onDismiss = { panel = PlayerPanel.None },
+            onStep = viewModel::stepSpeed,
+            onSet = viewModel::setSpeed
+        )
+
         PlayerPanel.None -> Unit
     }
 }
@@ -417,6 +427,8 @@ private fun PlayerControls(
     positionMs: Long,
     durationMs: Long,
     aspectMode: Int,
+    speedPercent: Int,
+    onOpenSpeed: () -> Unit,
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeekBy: (Long) -> Unit,
@@ -474,9 +486,14 @@ private fun PlayerControls(
                 modifier = Modifier
                     .clip(RoundedCornerShape(5.dp))
                     .background(PlayerColors.RateBadge)
+                    .clickable(onClick = onOpenSpeed)
                     .padding(horizontal = 7.dp, vertical = 3.dp)
             ) {
-                Text(text = "1.0x", color = PlayerColors.RateBadgeInk, fontSize = 10.sp)
+                Text(
+                    text = formatSpeed(speedPercent),
+                    color = PlayerColors.RateBadgeInk,
+                    fontSize = 10.sp
+                )
             }
             Spacer(Modifier.width(8.dp))
             IconButtonFlat(onClick = onCycleAspect) {
@@ -559,7 +576,11 @@ private fun PlayerControls(
             ) {
                 ToolItem(icon = Icons.Rounded.SkipPrevious, label = "上一集", onClick = onPrev)
                 ToolItem(icon = Icons.Rounded.SkipNext, label = "下一集", onClick = onNext)
-                ToolItem(icon = Icons.Rounded.Speed, label = "倍速", onClick = { onUnavailable("倍速") })
+                ToolItem(
+                    icon = Icons.Rounded.Speed,
+                    label = formatSpeed(speedPercent),
+                    onClick = onOpenSpeed
+                )
                 ToolItem(icon = Icons.Rounded.Subtitles, label = "字幕", onClick = onOpenSubtitle)
                 ToolItem(icon = Icons.Rounded.Audiotrack, label = "音轨", onClick = onOpenAudio)
                 ToolItem(icon = Icons.Rounded.Lock, label = "锁定", onClick = onLock)

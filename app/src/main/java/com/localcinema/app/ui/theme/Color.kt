@@ -86,6 +86,15 @@ object PlayerColors {
     /** 播放页工具条图标与文字 */
     val PlayerToolTint = Color(0xFFAFAFBB)
 
+    /** 倍速面板：步进圆钮底 */
+    val StepperBg = Color(0xFF2C2C36)
+
+    /** 倍速面板：快捷档位底 */
+    val ChipBg = Color(0xFF26262E)
+
+    /** 倍速面板：选中档位文字 */
+    val ChipActiveInk = Color(0xFF18181C)
+
     /** 播放页时间文字 */
     val PlayerTimeText = Color(0xFFC6C6D0)
 

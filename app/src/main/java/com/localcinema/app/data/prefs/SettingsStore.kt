@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -31,7 +32,9 @@ data class AppSettings(
     val audioPitchCorrection: Boolean = true,
     val keepScreenOn: Boolean = true,
     val backgroundPlay: Boolean = false,
-    val defaultLandscape: Boolean = true
+    val defaultLandscape: Boolean = true,
+    /** 播放速度，百分数：100 = 1.0x，范围 50–500 */
+    val speedPercent: Int = 100
 )
 
 @Singleton
@@ -49,6 +52,7 @@ class SettingsStore @Inject constructor(
         val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val backgroundPlay = booleanPreferencesKey("background_play")
         val defaultLandscape = booleanPreferencesKey("default_landscape")
+        val speedPercent = intPreferencesKey("speed_percent")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -62,7 +66,8 @@ class SettingsStore @Inject constructor(
             audioPitchCorrection = p[Keys.audioPitchCorrection] ?: true,
             keepScreenOn = p[Keys.keepScreenOn] ?: true,
             backgroundPlay = p[Keys.backgroundPlay] ?: false,
-            defaultLandscape = p[Keys.defaultLandscape] ?: true
+            defaultLandscape = p[Keys.defaultLandscape] ?: true,
+            speedPercent = p[Keys.speedPercent] ?: 100
         )
     }
 
@@ -105,5 +110,9 @@ class SettingsStore @Inject constructor(
 
     suspend fun setDefaultLandscape(value: Boolean) {
         context.dataStore.edit { it[Keys.defaultLandscape] = value }
+    }
+
+    suspend fun setSpeedPercent(value: Int) {
+        context.dataStore.edit { it[Keys.speedPercent] = value.coerceIn(50, 500) }
     }
 }

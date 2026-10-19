@@ -15,6 +15,7 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.exoplayer.ExoPlayer
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
+import com.localcinema.app.data.prefs.SettingsStore
 import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.scanner.NaturalOrder
 import com.localcinema.app.data.subtitle.SubtitleRepository
@@ -51,6 +52,7 @@ class PlayerViewModel @Inject constructor(
     videoDao: VideoDao,
     private val playbackRepository: PlaybackRepository,
     private val subtitleRepository: SubtitleRepository,
+    private val settingsStore: SettingsStore,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -78,6 +80,10 @@ class PlayerViewModel @Inject constructor(
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+
+    /** 播放速度，百分数：100 = 1.0x */
+    private val _speedPercent = MutableStateFlow(100)
+    val speedPercent: StateFlow<Int> = _speedPercent.asStateFlow()
 
     private val _resumeHint = MutableStateFlow<String?>(null)
     val resumeHint: StateFlow<String?> = _resumeHint.asStateFlow()
@@ -161,6 +167,11 @@ class PlayerViewModel @Inject constructor(
                     audioGroups.indexOfFirst { it.isSelected }.coerceAtLeast(0)
             }
         })
+
+        viewModelScope.launch {
+            val saved = settingsStore.settings.first().speedPercent
+            applySpeed(saved.coerceIn(50, 500), persist = false)
+        }
 
         viewModelScope.launch {
             val list = videoFlow.first()
@@ -254,6 +265,21 @@ class PlayerViewModel @Inject constructor(
 
     fun togglePlay() {
         if (player.isPlaying) player.pause() else player.play()
+    }
+
+    /** 每次 ±10（即 0.1x） */
+    fun stepSpeed(delta: Int) = applySpeed(_speedPercent.value + delta)
+
+    fun setSpeed(percent: Int) = applySpeed(percent)
+
+    private fun applySpeed(percent: Int, persist: Boolean = true) {
+        val clamped = percent.coerceIn(50, 500)
+        _speedPercent.value = clamped
+        // ExoPlayer 默认用 Sonic 做变速不变调，播放速度与音频音高解耦
+        player.setPlaybackSpeed(clamped / 100f)
+        if (persist) {
+            viewModelScope.launch { settingsStore.setSpeedPercent(clamped) }
+        }
     }
 
     fun seekTo(positionMs: Long) {
@@ -380,6 +406,13 @@ class PlayerViewModel @Inject constructor(
         const val EXTERNAL_INDEX = -1
     }
 }
+
+internal fun formatSpeed(percent: Int): String =
+    if (percent % 10 == 0) {
+        String.format("%.1fx", percent / 100f)
+    } else {
+        String.format("%.2fx", percent / 100f)
+    }
 
 internal fun formatMs(ms: Long): String {
     if (ms <= 0) return "00:00"
