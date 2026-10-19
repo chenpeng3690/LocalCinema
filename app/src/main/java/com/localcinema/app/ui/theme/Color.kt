@@ -70,6 +70,32 @@ object PlayerColors {
     /** 封面右下角标底 */
     val BadgeScrim = Color(0x8C000000)
 
+    /** 播放页控件层：上下渐变压暗 */
+    val PlayerScrimTop = Color(0x99000000)
+    val PlayerScrimBottom = Color(0xB3000000)
+
+    /** 播放页快进/快退圆钮底（白 16%） */
+    val PlayerJumpBg = Color(0x29FFFFFF)
+
+    /** 播放页中央播放钮底（黑 42%） */
+    val PlayerPlayBg = Color(0x6B000000)
+
+    /** 播放页进度条未播段（白 22%） */
+    val PlayerTrackInactive = Color(0x38FFFFFF)
+
+    /** 播放页工具条图标与文字 */
+    val PlayerToolTint = Color(0xFFAFAFBB)
+
+    /** 播放页时间文字 */
+    val PlayerTimeText = Color(0xFFC6C6D0)
+
+    /** Hero 卡副标题 */
+    val HeroSubText = Color(0xFFB4B4C0)
+
+    /** Hero 卡渐变遮罩 */
+    val HeroScrimTop = Color(0x1A000000)
+    val HeroScrimBottom = Color(0xD1000000)
+
     /**
      * 无封面时的占位渐变（深色四色板）。
      * 真实封面接入后仅在抽帧失败时使用。

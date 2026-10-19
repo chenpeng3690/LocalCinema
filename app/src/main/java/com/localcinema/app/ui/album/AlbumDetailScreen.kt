@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,10 +48,12 @@ import com.localcinema.app.data.db.AlbumDao
 import com.localcinema.app.data.db.AlbumEntity
 import com.localcinema.app.data.db.VideoDao
 import com.localcinema.app.data.db.VideoEntity
+import com.localcinema.app.data.repo.PlaybackRepository
 import com.localcinema.app.data.scanner.NaturalOrder
 import com.localcinema.app.data.scanner.formatDuration
 import com.localcinema.app.data.scanner.resolutionLabel
 import com.localcinema.app.data.thumb.ThumbnailStore
+import com.localcinema.app.ui.player.PlayerActivity
 import com.localcinema.app.ui.theme.Dimens
 import com.localcinema.app.ui.theme.PlayerColors
 import com.localcinema.app.ui.theme.PlayerType
@@ -59,6 +62,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -67,22 +71,48 @@ import java.io.File
 import javax.inject.Inject
 import kotlin.math.absoluteValue
 
+data class VideoRowUi(
+    val video: VideoEntity,
+    val progress: Float,
+    val finished: Boolean,
+    val lastPositionMs: Long
+)
+
 @HiltViewModel
 class AlbumDetailViewModel @Inject constructor(
     albumDao: AlbumDao,
     videoDao: VideoDao,
     private val thumbs: ThumbnailStore,
+    playbackRepository: PlaybackRepository,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
     private val albumId: String = checkNotNull(savedStateHandle.get<String>("albumId"))
 
+    fun albumIdValue(): String = albumId
+
     val album: StateFlow<AlbumEntity?> = albumDao.observeById(albumId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    val videos: StateFlow<List<VideoEntity>> = videoDao.observeByAlbum(albumId)
+    private val videoFlow = videoDao.observeByAlbum(albumId)
         .map { list -> list.sortedWith(compareBy(NaturalOrder) { it.displayName }) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val rows: StateFlow<List<VideoRowUi>> = combine(
+        videoFlow,
+        playbackRepository.observeStates()
+    ) { list, states ->
+        list.map { video ->
+            val state = states[video.id]
+            val duration = if (video.durationMs > 0) video.durationMs else (state?.durationMs ?: 0L)
+            val position = state?.positionMs ?: 0L
+            VideoRowUi(
+                video = video,
+                progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
+                finished = state?.finished == true,
+                lastPositionMs = position
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _thumbPaths = MutableStateFlow<Map<String, String>>(emptyMap())
     val thumbPaths: StateFlow<Map<String, String>> = _thumbPaths.asStateFlow()
@@ -120,8 +150,9 @@ fun AlbumDetailScreen(
     viewModel: AlbumDetailViewModel = hiltViewModel()
 ) {
     val album by viewModel.album.collectAsStateWithLifecycle()
-    val videos by viewModel.videos.collectAsStateWithLifecycle()
+    val rows by viewModel.rows.collectAsStateWithLifecycle()
     val thumbs by viewModel.thumbPaths.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopBar(title = album?.name ?: "", onBack = onBack)
@@ -130,17 +161,22 @@ fun AlbumDetailScreen(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 32.dp)
         ) {
-            item { AlbumHero(album = album, videoCount = videos.size) }
+            item { AlbumHero(album = album, videoCount = rows.size) }
 
             item {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = Dimens.pagePadding, end = Dimens.pagePadding, top = 20.dp, bottom = 10.dp),
+                        .padding(
+                            start = Dimens.pagePadding,
+                            end = Dimens.pagePadding,
+                            top = 20.dp,
+                            bottom = 10.dp
+                        ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "全部 ${videos.size} 集",
+                        text = "全部 ${rows.size} 集",
                         style = PlayerType.SectionTitle,
                         color = PlayerColors.TextPrimary,
                         modifier = Modifier.weight(1f)
@@ -153,7 +189,7 @@ fun AlbumDetailScreen(
                 }
             }
 
-            if (videos.isEmpty()) {
+            if (rows.isEmpty()) {
                 item {
                     Column(
                         modifier = Modifier
@@ -176,9 +212,21 @@ fun AlbumDetailScreen(
                     }
                 }
             } else {
-                items(videos, key = { it.id }) { video ->
-                    LaunchedEffect(video.id) { viewModel.ensureThumb(video) }
-                    VideoRow(video = video, thumbPath = thumbs[video.id])
+                items(rows, key = { it.video.id }) { row ->
+                    LaunchedEffect(row.video.id) { viewModel.ensureThumb(row.video) }
+                    VideoRow(
+                        ui = row,
+                        thumbPath = thumbs[row.video.id],
+                        onClick = {
+                            context.startActivity(
+                                PlayerActivity.intent(
+                                    context = context,
+                                    albumId = viewModel.albumIdValue(),
+                                    videoId = row.video.id
+                                )
+                            )
+                        }
+                    )
                 }
             }
         }
@@ -245,8 +293,8 @@ private fun AlbumHero(album: AlbumEntity?, videoCount: Int) {
                 .matchParentSize()
                 .background(
                     Brush.verticalGradient(
-                        0f to Color(0x1A000000),
-                        1f to Color(0xD1000000)
+                        0f to PlayerColors.HeroScrimTop,
+                        1f to PlayerColors.HeroScrimBottom
                     )
                 )
         )
@@ -265,7 +313,7 @@ private fun AlbumHero(album: AlbumEntity?, videoCount: Int) {
             Text(
                 text = "$videoCount 个视频 · 已授权目录",
                 fontSize = 10.5.sp,
-                color = Color(0xFFB4B4C0),
+                color = PlayerColors.HeroSubText,
                 modifier = Modifier.padding(top = 5.dp)
             )
         }
@@ -289,10 +337,16 @@ private fun AlbumHero(album: AlbumEntity?, videoCount: Int) {
 }
 
 @Composable
-private fun VideoRow(video: VideoEntity, thumbPath: String?) {
+private fun VideoRow(
+    ui: VideoRowUi,
+    thumbPath: String?,
+    onClick: () -> Unit
+) {
+    val video = ui.video
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = Dimens.pagePadding, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -334,6 +388,19 @@ private fun VideoRow(video: VideoEntity, thumbPath: String?) {
                         .padding(horizontal = 4.dp, vertical = 1.5.dp)
                 )
             }
+
+            if (ui.finished) {
+                Text(
+                    text = "✓",
+                    fontSize = 10.sp,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .background(PlayerColors.Accent, RoundedCornerShape(3.dp))
+                        .padding(horizontal = 3.dp)
+                )
+            }
         }
 
         Column(
@@ -363,10 +430,38 @@ private fun VideoRow(video: VideoEntity, thumbPath: String?) {
                     color = PlayerColors.TextTertiary
                 )
                 Text(
-                    text = video.container?.uppercase() ?: "未知",
+                    text = when {
+                        ui.finished -> "已看完"
+                        ui.lastPositionMs > 0 -> "已看 ${formatDuration(ui.lastPositionMs)}"
+                        else -> video.container?.uppercase() ?: "未知"
+                    },
                     style = PlayerType.Caption,
-                    color = PlayerColors.TextSecondary
+                    color = if (ui.lastPositionMs > 0 && !ui.finished) {
+                        PlayerColors.Accent
+                    } else {
+                        PlayerColors.TextSecondary
+                    }
                 )
+            }
+
+            // 观看进度条：未看过不显示
+            if (ui.progress > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 7.dp)
+                        .height(Dimens.progressHeight)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(PlayerColors.TrackInactive)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(ui.progress)
+                            .height(Dimens.progressHeight)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(PlayerColors.Accent)
+                    )
+                }
             }
         }
     }

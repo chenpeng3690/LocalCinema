@@ -75,6 +75,9 @@ interface PlaybackStateDao {
     @Query("SELECT * FROM playback_state ORDER BY updatedAt DESC LIMIT :limit")
     fun observeRecent(limit: Int = 20): Flow<List<PlaybackStateEntity>>
 
+    @Query("SELECT * FROM playback_state")
+    fun observeAll(): Flow<List<PlaybackStateEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(state: PlaybackStateEntity)
 
