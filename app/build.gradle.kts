@@ -14,8 +14,8 @@ android {
         applicationId = "com.localcinema.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.4.1"
+        versionCode = 14
+        versionName = "0.4.2"
         vectorDrawables { useSupportLibrary = true }
     }
 

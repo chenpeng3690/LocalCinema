@@ -6,7 +6,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 安装包：**release 3.3MB**（R8 压缩后），debug 约 22MB
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.4.1（versionCode 13）
+- 当前版本：0.4.2（versionCode 14）
 
 ---
 
@@ -324,6 +324,37 @@ seekable，命令被 session 拒成 `ERROR_PERMISSION_DENIED`；**但控制器�
 新播放页 `onCreate` 里 `connect()`，上一个播放页这时才走到 `onCleared → release()`，
 连接被拆掉，新页面永远等不到 player：**黑屏，只能退出重进**。
 改成 acquire / release 计数，最后一个使用者退出才断开；再配 5 次 `ensureConnected()` 重连兜底。
+
+**16. 通知栏没有图标：是 small icon 和 artwork 都没给**
+
+media3 的 `DefaultMediaNotificationProvider` 不设置就用它自带的占位图（黑圆 + 白三角），
+本地视频又没有内嵌封面，`MediaMetadata.artworkUri` 是空的，锁屏大图也空着。
+两处都要补：`DefaultMediaNotificationProvider.setSmallIcon(R.drawable.ic_stat_cinema)` 管通知小图标，
+`MediaSession.Builder.setBitmapLoader()` 管锁屏/通知大图。
+
+封面刻意走 `BitmapLoader` 而不是 `MediaMetadata.setArtworkData`：播放队列可能上百集，
+每个 `MediaItem` 都带一份图片字节，timeline 经 Binder 传给控制器时会直接撑爆事务上限。
+
+小图标必须是单色矢量（系统会整体染色），带灰阶的 PNG 在部分 ROM 上会糊成一团。
+
+**17. 通知/锁屏没有「上一集/下一集」：因为播放器里只有一集**
+
+`DefaultMediaNotificationProvider.getMediaButtons()` 判断要不要画这两个键，看的是
+`playerCommands.containsAny(COMMAND_SEEK_TO_NEXT/PREVIOUS_MEDIA_ITEM)`；而这条命令只在
+`hasNextMediaItem()` / `hasPreviousMediaItem()` 为真时才会进可用命令集。
+原实现每集 `setMediaItem()` 单个媒体项，player 眼里永远只有一集，于是只剩一个播放/暂停键 ——
+不是没画，是系统认为没有下一集。耳机线控、锁屏、车机走的是同一套命令，一起失效。
+
+改法：把整张专辑作为队列下发（`setMediaItems(list, index, startMs)`）。带动画的两条连锁反应要一起处理：
+
+- `onMediaItemTransition(AUTO)` 现在是**每集播完**的触发点，`STATE_ENDED` 只在最后一集出现。
+  「播完停止」「下一集倒计时」靠把位置退回刚播完那集的末尾（`seekTo(index, C.TIME_END_OF_SOURCE)`）
+  再交给原有的 `onEnded()`，否则这两个设置会静默失效。
+- `onMediaItemTransition(SEEK)` 是用户点了通知/锁屏上下集的信号，界面状态（标题、字幕、
+  最近播放、播放次数）必须跟着换，否则全停在上一条上。
+
+队列上限 500：`MediaItem` 列表随 timeline 走 Binder，单次事务约 1MB。
+超过就退化成单集队列（通知里没有上下集，但不会崩）。
 
 ---
 

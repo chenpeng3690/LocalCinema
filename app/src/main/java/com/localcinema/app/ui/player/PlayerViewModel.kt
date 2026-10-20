@@ -200,6 +200,30 @@ class PlayerViewModel @Inject constructor(
             showHint("播放出错：${error.errorCodeName}", 4_000L)
         }
 
+        /**
+         * 换集。
+         *
+         * 这里同时承担两件事：
+         * 1. 队列自己往下走（自然播完）—— 要不要接着播由连播设置决定；
+         * 2. 用户在通知/锁屏/耳机线上点了上一集下一集 —— 界面得跟着换，否则
+         *    标题、字幕、进度保存全都会停在上一条上。
+         */
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            val p = attachedPlayer ?: return
+            when (reason) {
+                Player.MEDIA_ITEM_TRANSITION_REASON_AUTO,
+                Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT -> onAutoAdvance(p)
+
+                Player.MEDIA_ITEM_TRANSITION_REASON_SEEK -> {
+                    val id = mediaItem?.mediaId ?: return
+                    videos.value.firstOrNull { it.id == id }?.let { adoptExternalVideo(it) }
+                }
+
+                // PLAYLIST_CHANGED 是我们自己 setMediaItems 触发的，忽略
+                else -> Unit
+            }
+        }
+
         /** 内嵌字幕走这里；外挂字幕自己渲染 */
         override fun onCues(cueGroup: CueGroup) {
             if (externalActive) return
@@ -288,6 +312,7 @@ class PlayerViewModel @Inject constructor(
                 _jumpRight.value = settings.jumpRight
                 _backgroundPlay.value = settings.backgroundPlay
                 _playlistMode.value = settings.playlistMode
+                attachedPlayer?.let { applyPlaylistMode(it) }
                 nextCountdownEnabled = settings.nextCountdown
                 _boostSpeedPercent.value = settings.longPressSpeedPercent
                 _jumpHintEnabled.value = settings.jumpHintEnabled
@@ -354,6 +379,7 @@ class PlayerViewModel @Inject constructor(
                 // 看起来就是「打开视频不自动播放，得手动点一下」。
                 _currentVideo.value = target
                 pausedByLeaving = false
+                applyPlaylistMode(p)
                 // ENDED 状态下 play() 不会自己从头开始
                 if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
                 if (!p.isPlaying) p.play()
@@ -373,12 +399,7 @@ class PlayerViewModel @Inject constructor(
             settingsStore.setLastVideo(albumId, video.id)
 
             _currentVideo.value = video
-            externalCues = emptyList()
-            externalActive = false
-            _externalSubtitleName.value = null
-            _externalIsManual.value = false
-            _selectedTextIndex.value = null
-            _subtitleText.value = ""
+            resetSubtitleState()
             pausedByLeaving = false
 
             // 续播位置必须随 MediaItem 一起下发，不能先 prepare 再 seekTo。
@@ -388,7 +409,14 @@ class PlayerViewModel @Inject constructor(
             // 控制器却已经在本地把 position 掩码成起始位置，所以界面显示的时间是对的、声音却从头开始。
             // 冷启动（进程被杀，播放器是新建的）必现；进程还活着时播放器早已 seekable，所以看不出问题。
             pendingResumeMs = startMs.takeIf { it > 0L }
-            p.setMediaItem(buildMediaItem(video), startMs.coerceAtLeast(0L))
+
+            // 整个专辑作为播放队列下发。
+            // 只放当前这一集的话，player 的 hasNextMediaItem()/hasPreviousMediaItem() 永远是 false，
+            // COMMAND_SEEK_TO_NEXT/PREVIOUS_MEDIA_ITEM 不在可用命令里，通知和锁屏卡片就只剩一个
+            // 播放/暂停键 —— 上一集/下一集不是我们没画，是系统根本没有这两个按钮。
+            applyPlaylistMode(p)
+            val queue = queueAround(video)
+            p.setMediaItems(queue.items, queue.index, startMs.coerceAtLeast(0L))
             p.prepare()
             p.playWhenReady = true
 
@@ -402,6 +430,98 @@ class PlayerViewModel @Inject constructor(
                 loadSubtitleFile(Uri.parse(it), manual = video.manualSubtitleUri != null)
             }
         }
+    }
+
+    private class PlaybackQueue(val items: List<MediaItem>, val index: Int)
+
+    /**
+     * 以 [video] 为中心构建播放队列。
+     *
+     * 队列长度决定通知栏能不能显示上一集/下一集：整张专辑都在队列里，
+     * player 才会认为「有下一项」，系统媒体控件才会给出那两个键；
+     * 耳机线控、锁屏、通知、车机走的是同一套命令。
+     *
+     * 规模保护：MediaItem 列表会随 timeline 经 Binder 发给控制器，
+     * 单个事务有大小上限。正常专辑（几十到几百集）远不到线；
+     * 真遇到上千集的目录就退化成单集队列，宁可少两个按钮也不能让 setMediaItems 抛异常。
+     */
+    private fun queueAround(video: VideoEntity): PlaybackQueue {
+        val list = albumVideos().ifEmpty { listOf(video) }
+        val index = list.indexOfFirst { it.id == video.id }.let { if (it >= 0) it else 0 }
+        val total = list.size
+
+        if (total > MAX_QUEUE_ITEMS) {
+            return PlaybackQueue(listOf(buildMediaItem(video, index, total)), 0)
+        }
+        return PlaybackQueue(
+            items = list.mapIndexed { i, v -> buildMediaItem(v, i, total) },
+            index = index
+        )
+    }
+
+    /**
+     * 队列自己往前走了（当前这一集自然播完）。
+     *
+     * 直接顺播最省事，也不用重新加载；但「播完停止」和「下一集倒计时」必须停下来等用户，
+     * 这时把播放位置退回刚播完那一集的末尾，交回 onEnded 走原有流程。
+     */
+    private fun onAutoAdvance(p: Player) {
+        val mode = _playlistMode.value
+        val mustIntercept = mode == PlaylistMode.STOP_AFTER_ONE ||
+            (mode != PlaylistMode.LOOP_ONE && nextCountdownEnabled)
+
+        if (!mustIntercept) {
+            videos.value.firstOrNull { it.id == p.currentMediaItem?.mediaId }
+                ?.let { adoptExternalVideo(it) }
+            return
+        }
+
+        val endedIndex = p.currentMediaItemIndex - 1
+        p.pause()
+        if (endedIndex >= 0) p.seekTo(endedIndex, C.TIME_END_OF_SOURCE)
+        onEnded()
+    }
+
+    /**
+     * 播放器被「外部」换了集（用户点通知栏/锁屏/耳机上的上一集下一集）。
+     *
+     * 界面状态必须跟着换：标题、字幕、最近播放、播放次数。
+     * 队列是 player 自己的，这里不要再 setMediaItems，否则会把用户刚点的操作打断。
+     */
+    private fun adoptExternalVideo(video: VideoEntity) {
+        if (_currentVideo.value?.id == video.id) return
+
+        _currentVideo.value = video
+        resetSubtitleState()
+        pausedByLeaving = false
+        // 位置由 player 自己决定，兜底校验不该再插手
+        pendingResumeMs = null
+
+        viewModelScope.launch {
+            playbackRepository.markStarted(video)
+            settingsStore.setLastVideo(albumId, video.id)
+            val subtitle = video.manualSubtitleUri ?: video.subtitleUri
+            subtitle?.let { loadSubtitleFile(Uri.parse(it), manual = video.manualSubtitleUri != null) }
+        }
+    }
+
+    private fun resetSubtitleState() {
+        externalCues = emptyList()
+        externalActive = false
+        _externalSubtitleName.value = null
+        _externalIsManual.value = false
+        _selectedTextIndex.value = null
+        _subtitleText.value = ""
+    }
+
+    /** 播放模式对应的 player 行为：单集循环用原生 repeat，随机用原生 shuffle */
+    private fun applyPlaylistMode(p: Player) {
+        p.repeatMode = if (_playlistMode.value == PlaylistMode.LOOP_ONE) {
+            Player.REPEAT_MODE_ONE
+        } else {
+            Player.REPEAT_MODE_OFF
+        }
+        p.shuffleModeEnabled = _playlistMode.value == PlaylistMode.SHUFFLE
     }
 
     /**
@@ -419,13 +539,15 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    private fun buildMediaItem(video: VideoEntity): MediaItem =
+    private fun buildMediaItem(video: VideoEntity, index: Int, total: Int): MediaItem =
         MediaItem.Builder()
             .setUri(video.uri)
             .setMediaId(video.id)
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(video.displayName)
+                    // subtitle 会作为通知/锁屏卡片的副标题，顺手把「第几集 / 共几集」告诉用户
+                    .setSubtitle("${index + 1} / $total")
                     .build()
             )
             .build()
@@ -617,11 +739,13 @@ class PlayerViewModel @Inject constructor(
     fun cyclePlaylistMode() {
         val next = PlaylistMode.next(_playlistMode.value)
         _playlistMode.value = next
+        attachedPlayer?.let { applyPlaylistMode(it) }
         viewModelScope.launch { settingsStore.setPlaylistMode(next) }
     }
 
     fun setPlaylistMode(mode: String) {
         _playlistMode.value = mode
+        attachedPlayer?.let { applyPlaylistMode(it) }
         viewModelScope.launch { settingsStore.setPlaylistMode(mode) }
     }
 
@@ -819,6 +943,15 @@ class PlayerViewModel @Inject constructor(
         const val KEY_VIDEO_ID = "videoId"
         const val EXTERNAL_INDEX = -1
         private const val COUNTDOWN_SECONDS = 5
+
+        /**
+         * 播放队列的上限。
+         *
+         * 队列随 timeline 经 Binder 发给控制器，单次事务有大小上限（约 1MB）。
+         * 每个 MediaItem 序列化后大概几百字节，500 集约 200KB，留足余量。
+         * 超过这个数就退化为单集队列 —— 通知里没有上下集按钮，但不会崩。
+         */
+        private const val MAX_QUEUE_ITEMS = 500
     }
 }
 

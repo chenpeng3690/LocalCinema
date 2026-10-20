@@ -6,8 +6,10 @@ import androidx.media3.common.C
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.localcinema.app.R
 import dagger.hilt.android.AndroidEntryPoint
 
 /**
@@ -72,7 +74,22 @@ class PlaybackService : MediaSessionService() {
         // 代价：落点最多偏离 5 秒，即「快进 30 秒」可能只前进 25 秒或前进 35 秒。
         player.setSeekParameters(SeekParameters(5_000_000L, 5_000_000L))
 
-        mediaSession = MediaSession.Builder(this, player).build()
+        /**
+         * 通知栏小图标。
+         *
+         * 不设置的话 media3 用它自带的占位图（一个白色播放三角压在黑圆里），
+         * 锁屏和通知下拉里看着就像「App 没有图标」。换成自绘的单色播放圆环。
+         *
+         * 必须在 onCreate 里、session 建起来之前设好，否则第一条通知已经发出去了。
+         */
+        DefaultMediaNotificationProvider(this)
+            .apply { setSmallIcon(R.drawable.ic_stat_cinema) }
+            .also { setMediaNotificationProvider(it) }
+
+        // 本地视频没有内嵌封面，挂一个「永远有图」的 loader，锁屏大图才不会空着
+        mediaSession = MediaSession.Builder(this, player)
+            .setBitmapLoader(PlaybackArtwork())
+            .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
