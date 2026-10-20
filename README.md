@@ -6,7 +6,7 @@ Android 本地视频播放器。纯离线、无网络权限、数据只存在本
 - 技术栈：Kotlin 2.0.20 · Jetpack Compose · Hilt · Room · DataStore · Media3
 - 安装包：**release 3.3MB**（R8 压缩后），debug 约 22MB
 - 最低版本：Android 7.0（minSdk 24），targetSdk 34
-- 当前版本：0.3.4（versionCode 9）
+- 当前版本：0.4.1（versionCode 13）
 
 ---
 
@@ -299,6 +299,31 @@ Compose 的多个 `pointerInput` 会**并行**接收同一串事件。把「长�
 **12. 沙箱到 GitHub 的链路不稳**
 
 `api.github.com` 稳定，但 `github.com:443`（git 传输）会间歇性 TLS 中断。已把 git 切到 HTTP/1.1 + 短超时重试，成功率从 1/5 提升到约 4/6。推送失败属网络问题，重试即可。
+
+**13. `MediaController.seekTo()` 在 prepare 之后会被丢掉 —— 冷启动续播失效**
+
+`MediaController.seekTo(pos)` 先检查 `COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM` 是否可用；
+这个命令只有在 `isCurrentMediaItemSeekable == true` 时才进入可用命令集（见
+`Util.getAvailableCommands`）。`setMediaItem()` 之后、媒体项真正 ready 之前播放器还不是
+seekable，命令被 session 拒成 `ERROR_PERMISSION_DENIED`；**但控制器已经在本地把 position
+掩码成目标值**，于是「界面显示的时间是对的，声音却从头开始」。
+
+进程还活着时播放器早已 seekable，永远命中不了；只有冷启动（进程被杀、ExoPlayer 新建）必现。
+正确做法是把起始位置**随媒体项一起下发**：`player.setMediaItem(item, startPositionMs)`，
+它走 `setMediaItems(items, index, startPos)`，在准备阶段一次性生效，不依赖 seek 命令。
+
+**14. 播放页自己按的暂停，回前台要自己撤销**
+
+`onPause` 不只发生在按返回键：通知授权弹窗、分屏、锁屏都会走。原实现无条件 `pause()`，
+回前台又没有对应恢复，于是表现为「打开视频没自动播，要手动点一下」。
+现在记 `pausedByLeaving`（只有本来是播放中才记），`onResume` 里还原；另外
+`startPlaybackIfNeeded` 遇到「Service 里还停在这一集」时不再直接 return，会补一次 `play()`。
+
+**15. `PlayerConnection` 必须做引用计数**
+
+新播放页 `onCreate` 里 `connect()`，上一个播放页这时才走到 `onCleared → release()`，
+连接被拆掉，新页面永远等不到 player：**黑屏，只能退出重进**。
+改成 acquire / release 计数，最后一个使用者退出才断开；再配 5 次 `ensureConnected()` 重连兜底。
 
 ---
 

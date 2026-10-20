@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
@@ -71,7 +72,18 @@ class PlayerViewModel @Inject constructor(
     val player: StateFlow<Player?> = connection.player
 
     private var attachedPlayer: Player? = null
-    private var playbackStarted = false
+
+    /** 已经在这个 player 实例上决定了播什么；换 controller 后要重新决定 */
+    private var startedOnPlayer: Player? = null
+
+    /**
+     * 本次起播期望落到的位置。用于兜底校验：
+     * setMediaItem(item, startMs) 正常会直接落在目标点，若实际位置明显落后，补一次 seek。
+     */
+    private var pendingResumeMs: Long? = null
+
+    /** 退出播放页时是我们自己暂停的（挂后台且未开后台播放），回前台要接着放 */
+    private var pausedByLeaving = false
 
     private val videoFlow = videoDao.observeByAlbum(albumId)
         .map { list -> list.sortedWith(compareBy(NaturalOrder) { it.displayName }) }
@@ -180,6 +192,12 @@ class PlayerViewModel @Inject constructor(
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) onEnded()
+            if (playbackState == Player.STATE_READY) verifyResumePosition()
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            // 黑屏但没有任何提示是最难排查的，这里至少把错误码抛给用户
+            showHint("播放出错：${error.errorCodeName}", 4_000L)
         }
 
         /** 内嵌字幕走这里；外挂字幕自己渲染 */
@@ -232,17 +250,33 @@ class PlayerViewModel @Inject constructor(
             _jumpHintEnabled.value = s.jumpHintEnabled
         }
 
-        connection.connect()
+        connection.acquire()
 
         // 连接完成后绑定监听并开始播放
         viewModelScope.launch {
             connection.player.collect { p ->
-                if (p != null && p !== attachedPlayer) {
+                if (p == null) {
+                    // 连接被释放：解绑，等重连后的新实例再走一遍起播判断
+                    attachedPlayer?.removeListener(listener)
+                    attachedPlayer = null
+                    return@collect
+                }
+                if (p !== attachedPlayer) {
                     attachedPlayer?.removeListener(listener)
                     p.addListener(listener)
                     attachedPlayer = p
                     startPlaybackIfNeeded(p)
                 }
+            }
+        }
+
+        // 控制器偶发连不上（Service 正在重建、上一次连接刚被释放）：2 秒一次重试，最多 5 次。
+        // 没有这一步的重试，播放页会永远黑屏，只能重新进一次。
+        viewModelScope.launch {
+            repeat(5) {
+                delay(2_000)
+                if (connection.player.value != null) return@launch
+                connection.ensureConnected()
             }
         }
 
@@ -294,21 +328,35 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
-     * 首次连接时决定播什么。
-     * 如果 Service 正在放同一个视频（用户从后台切回来），不打断它，只同步 UI。
+     * 首次连上某个 player 时决定播什么。
+     *
+     * 判断挂在 player 实例上而不是一个布尔值：controller 断线重连（或上一次连接被
+     * 上一个播放页释放掉）时会换一个新实例，布尔值会让我们以为「已经起过了」，
+     * 于是新实例上什么也不做 —— 表现就是黑屏。
      */
     private fun startPlaybackIfNeeded(p: Player) {
-        if (playbackStarted) return
-        playbackStarted = true
+        if (startedOnPlayer === p) return
+        startedOnPlayer = p
 
         viewModelScope.launch {
             val list = videoFlow.first()
-            if (list.isEmpty()) return@launch
+            if (list.isEmpty()) {
+                // 视频还没从库里读出来，留空让下次 attach 再试
+                startedOnPlayer = null
+                return@launch
+            }
             val target = list.firstOrNull { it.id == startVideoId } ?: list.first()
 
-            val alreadyPlaying = p.mediaItemCount > 0 && p.currentMediaItem?.mediaId == target.id
-            if (alreadyPlaying) {
+            val sameItem = p.mediaItemCount > 0 && p.currentMediaItem?.mediaId == target.id
+            if (sameItem) {
+                // Service 里的播放器还停在这一集上（用户从后台切回来 / 退出播放页又进来）。
+                // 之前这里直接 return，于是「退出播放页时被我们暂停」的状态被原样带回来，
+                // 看起来就是「打开视频不自动播放，得手动点一下」。
                 _currentVideo.value = target
+                pausedByLeaving = false
+                // ENDED 状态下 play() 不会自己从头开始
+                if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
+                if (!p.isPlaying) p.play()
                 return@launch
             }
             playVideo(target)
@@ -331,20 +379,43 @@ class PlayerViewModel @Inject constructor(
             _externalIsManual.value = false
             _selectedTextIndex.value = null
             _subtitleText.value = ""
+            pausedByLeaving = false
 
-            p.setMediaItem(buildMediaItem(video))
+            // 续播位置必须随 MediaItem 一起下发，不能先 prepare 再 seekTo。
+            // 原因：MediaController.seekTo 要求 COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM 可用，
+            // 而这个命令只在 isCurrentMediaItemSeekable == true 时才存在（见 Util.getAvailableCommands）。
+            // 刚 setMediaItem 的瞬间媒体项还没准备好，命令被 session 拒掉（PERMISSION_DENIED）；
+            // 控制器却已经在本地把 position 掩码成起始位置，所以界面显示的时间是对的、声音却从头开始。
+            // 冷启动（进程被杀，播放器是新建的）必现；进程还活着时播放器早已 seekable，所以看不出问题。
+            pendingResumeMs = startMs.takeIf { it > 0L }
+            p.setMediaItem(buildMediaItem(video), startMs.coerceAtLeast(0L))
             p.prepare()
+            p.playWhenReady = true
+
             if (startMs > 0L) {
-                p.seekTo(startMs)
                 showHint("已跳到 ${formatMs(startMs)}（上次看到这里）", 3_000L)
             }
-            p.playWhenReady = true
 
             // 手动挂载过就以手动为准，否则用扫描时自动匹配的
             val subtitle = video.manualSubtitleUri ?: video.subtitleUri
             subtitle?.let {
                 loadSubtitleFile(Uri.parse(it), manual = video.manualSubtitleUri != null)
             }
+        }
+    }
+
+    /**
+     * 起播位置兜底校验。
+     * 只有「明显落后」才补 seek：seek 容差本身是 5 秒，位置比目标大不算异常。
+     */
+    private fun verifyResumePosition() {
+        val expected = pendingResumeMs ?: return
+        val p = attachedPlayer ?: return
+        if (p.playbackState != Player.STATE_READY) return
+        if (!p.isCurrentMediaItemSeekable) return
+        pendingResumeMs = null
+        if (expected - p.currentPosition > 8_000L) {
+            p.seekTo(expected)
         }
     }
 
@@ -419,12 +490,28 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    /** 界面退到后台：落进度；未开启后台播放则暂停 */
+    /**
+     * 界面退到后台：落进度；未开启后台播放则暂停。
+     *
+     * 注意 onPause 不只发生在「按返回键离开」，通知授权弹窗、分屏、锁屏都会走这里。
+     * 所以只记下「这次暂停是我们主动做的」，回前台时再还原，否则会出现
+     * 「打开视频没自动播，要手动点一下」——那一暂停是弹窗引起的。
+     */
     fun onActivityPause() {
         saveNow()
+        val p = attachedPlayer ?: return
         if (!_backgroundPlay.value) {
-            attachedPlayer?.pause()
+            pausedByLeaving = p.isPlaying
+            p.pause()
         }
+    }
+
+    /** 回到前台：如果上一次暂停是 onPause 替用户做的，就接着放 */
+    fun onActivityResume() {
+        val p = attachedPlayer ?: return
+        if (!pausedByLeaving) return
+        pausedByLeaving = false
+        if (!p.isPlaying && p.playbackState != Player.STATE_ENDED) p.play()
     }
 
     fun togglePlay() {
@@ -628,7 +715,11 @@ class PlayerViewModel @Inject constructor(
 
     fun saveNow() {
         val video = _currentVideo.value ?: return
-        val position = attachedPlayer?.currentPosition ?: return
+        val p = attachedPlayer ?: return
+        // 播放器上挂的已经不是这个视频了（例如连续起了两次播、或切集还在异步准备中），
+        // 这时候的 currentPosition 属于另一个视频，写进去就是错的进度
+        if (p.mediaItemCount > 0 && p.currentMediaItem?.mediaId != video.id) return
+        val position = p.currentPosition
         if (position <= 0L) return
         viewModelScope.launch {
             playbackRepository.save(video, position, durationMs())

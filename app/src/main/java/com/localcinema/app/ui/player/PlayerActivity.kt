@@ -52,6 +52,11 @@ class PlayerActivity : ComponentActivity() {
         viewModel.onActivityPause()
     }
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.onActivityResume()
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()

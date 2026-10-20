@@ -137,6 +137,18 @@ fun PlayerScreen(
     var aspectMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var overlay by remember { mutableStateOf<String?>(null) }
 
+    // 控制器还没连上时画面是全黑的。给个 1.5 秒的缓冲再提示，避免一闪而过，
+    // 也让「黑屏」变成一句可读懂的状态。
+    var connecting by remember { mutableStateOf(false) }
+    LaunchedEffect(player) {
+        if (player != null) {
+            connecting = false
+            return@LaunchedEffect
+        }
+        delay(1_500)
+        if (player == null) connecting = true
+    }
+
     // 按钮 / 双击 / 手势触发的提示统一在这里自动消失，避免残留
     LaunchedEffect(overlay) {
         val currentText = overlay ?: return@LaunchedEffect
@@ -205,7 +217,9 @@ fun PlayerScreen(
                 PlayerView(ctx).apply {
                     useController = false
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                    // ALWAYS 而不是 WHEN_PLAYING：起播失败/被抑制时如果连缓冲圈都没有，
+                    // 用户看到的就是纯黑屏，分不清是在加载还是卡死了
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
                 }
             },
             update = { view ->
@@ -385,6 +399,18 @@ fun PlayerScreen(
                     .padding(horizontal = 14.dp, vertical = 8.dp)
             ) {
                 Text(text = hint, color = Color.White, fontSize = 11.5.sp)
+            }
+        }
+
+        if (connecting) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(PlayerColors.Scrim)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Text(text = "正在连接播放器…", color = Color.White, fontSize = 12.sp)
             }
         }
     }
